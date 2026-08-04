@@ -22,6 +22,10 @@ struct CommandLineTool {
           minutes-cli fetch-models [--model v3|v2]
               Download the Parakeet speech model to the local cache. Needs the network once.
 
+          minutes-cli record <seconds> [--out file.wav]
+              Record the microphone for a few seconds and report what arrived.
+              Proves a device is feeding real samples, without the app or a window.
+
           minutes-cli transcribe <audio.wav> [--track me|others] [--model v3|v2]
               Transcribe a WAV on this Mac and print the transcript with measured timings.
 
@@ -142,6 +146,29 @@ struct CommandLineTool {
                     }
                 }
                 print("Model files are at \(url.path)")
+            } catch {
+                complain(error.localizedDescription)
+            }
+
+        case "record":
+            let seconds = Double(arguments.positional.first ?? "5") ?? 5
+            let output = URL(
+                fileURLWithPath: arguments.options["out"]
+                    ?? FileManager.default.temporaryDirectory.appendingPathComponent("minutes-record.wav").path)
+            let microphone = MicrophoneCapture()
+            if let reason = microphone.unavailableReason { complain(reason) }
+
+            do {
+                try microphone.start(writingTo: output)
+                print(String(format: "Recording %.0f seconds to %@", seconds, output.path))
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                let result = try microphone.stop()
+                print(result.summary)
+                print(String(format: "RMS level %.4f over %d frames.", result.signal.rms, result.signal.frameCount))
+                if result.signal.isAllZero {
+                    complain(
+                        "Every sample was digital zero. Either nothing is feeding the input, or macOS denied the microphone to this binary. A bare executable is not granted microphone access; build the app with make app.")
+                }
             } catch {
                 complain(error.localizedDescription)
             }
