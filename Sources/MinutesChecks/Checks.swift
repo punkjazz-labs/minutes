@@ -1,0 +1,24 @@
+import Foundation
+import MinutesCore
+
+@main
+struct Checks {
+    static func main() async {
+        let run = CheckRun()
+        print("minutes \(MinutesBuild.version) checks")
+
+        do {
+            try audioChecks(run)
+            transcriptChecks(run)
+            try storageChecks(run)
+            await notesChecks(run)
+            try await pipelineChecks(run)
+        } catch {
+            run.failed("a check threw: \(error.localizedDescription)")
+        }
+
+        Scratch.cleanUp()
+        run.report()
+        exit(run.exitCode)
+    }
+}
