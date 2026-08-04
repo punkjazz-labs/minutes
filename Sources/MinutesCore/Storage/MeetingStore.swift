@@ -1,0 +1,246 @@
+import Foundation
+
+/// Where one meeting lives on disk. Plain files, one directory per meeting, so
+/// the owner can read them without this app and can leave whenever they like.
+///
+///     2026-08-04-1400-pricing-call/
+///       notes.md
+///       transcript.md
+///       audio/mic.wav
+///       meta.json
+public struct MeetingDirectory: Sendable, Equatable {
+    public let url: URL
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    public var audioDirectory: URL { url.appendingPathComponent("audio", isDirectory: true) }
+    public var transcriptURL: URL { url.appendingPathComponent("transcript.md") }
+    public var notesURL: URL { url.appendingPathComponent("notes.md") }
+    public var metaURL: URL { url.appendingPathComponent("meta.json") }
+
+    public func audioURL(for track: AudioTrack) -> URL {
+        audioDirectory.appendingPathComponent(track.fileName)
+    }
+}
+
+/// What ran where, written next to the meeting so nothing about provenance
+/// has to be remembered.
+public struct MeetingMeta: Codable, Sendable, Equatable {
+    public var title: String
+    public var startedAt: Date
+    public var durationSeconds: Double
+    public var appVersion: String
+    public var transcriptionEngine: String
+    public var transcriptionModel: String
+    public var transcriptionRanOn: String
+    public var transcriptionRealtimeFactor: Double?
+    public var notesEndpoint: String?
+    public var notesModel: String?
+    public var notesState: String
+    public var tracksRecorded: [String]
+    public var tracksMissing: [String]
+    public var audioKept: Bool
+    public var syncService: String?
+
+    public init(
+        title: String,
+        startedAt: Date,
+        durationSeconds: Double,
+        appVersion: String = MinutesBuild.version,
+        transcriptionEngine: String,
+        transcriptionModel: String,
+        transcriptionRanOn: String = "this Mac",
+        transcriptionRealtimeFactor: Double? = nil,
+        notesEndpoint: String? = nil,
+        notesModel: String? = nil,
+        notesState: String,
+        tracksRecorded: [String],
+        tracksMissing: [String],
+        audioKept: Bool,
+        syncService: String? = nil
+    ) {
+        self.title = title
+        self.startedAt = startedAt
+        self.durationSeconds = durationSeconds
+        self.appVersion = appVersion
+        self.transcriptionEngine = transcriptionEngine
+        self.transcriptionModel = transcriptionModel
+        self.transcriptionRanOn = transcriptionRanOn
+        self.transcriptionRealtimeFactor = transcriptionRealtimeFactor
+        self.notesEndpoint = notesEndpoint
+        self.notesModel = notesModel
+        self.notesState = notesState
+        self.tracksRecorded = tracksRecorded
+        self.tracksMissing = tracksMissing
+        self.audioKept = audioKept
+        self.syncService = syncService
+    }
+}
+
+public enum MeetingSlug {
+    public static func directoryName(title: String, date: Date) -> String {
+        let formatter = DateFormatter()
+        // A fixed locale, because a 12-hour locale turns HHmm into "200 PM"
+        // and the folder name is a filename, not something to read aloud.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        return "\(formatter.string(from: date))-\(slug(title))"
+    }
+
+    public static func slug(_ title: String) -> String {
+        let lowered = title.lowercased()
+        var out = ""
+        var lastWasDash = false
+        for character in lowered {
+            if character.isLetter || character.isNumber {
+                out.append(character)
+                lastWasDash = false
+            } else if !lastWasDash {
+                out.append("-")
+                lastWasDash = true
+            }
+        }
+        let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if trimmed.isEmpty { return "meeting" }
+        return String(trimmed.prefix(48)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+}
+
+/// Creates and writes meeting directories.
+public struct MeetingStore: Sendable {
+
+    public let root: URL
+
+    private var fileManager: FileManager { .default }
+
+    public init(root: URL) {
+        self.root = root
+    }
+
+    public init(settings: AppSettings) {
+        self.init(root: settings.notesFolderURL)
+    }
+
+    /// The sentence to show about this folder, or nil when it does not sync.
+    public var syncWarning: String? { SyncFolderDetector.warning(for: root) }
+    public var syncService: String? { SyncFolderDetector.service(for: root) }
+
+    @discardableResult
+    public func createMeeting(title: String, date: Date = Date()) throws -> MeetingDirectory {
+        var name = MeetingSlug.directoryName(title: title, date: date)
+        var candidate = root.appendingPathComponent(name, isDirectory: true)
+        var suffix = 2
+        while fileManager.fileExists(atPath: candidate.path) {
+            name = "\(MeetingSlug.directoryName(title: title, date: date))-\(suffix)"
+            candidate = root.appendingPathComponent(name, isDirectory: true)
+            suffix += 1
+        }
+        let directory = MeetingDirectory(url: candidate)
+        try fileManager.createDirectory(at: directory.audioDirectory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    public func writeTranscript(_ transcript: Transcript, title: String, to directory: MeetingDirectory) throws {
+        try transcript.markdown(title: title).write(to: directory.transcriptURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Notes with front matter naming what produced them. `pendingReason` is
+    /// written when the endpoint did not answer, so a meeting is never lost
+    /// because a machine was off.
+    public func writeNotes(
+        title: String,
+        date: Date,
+        duration: TimeInterval,
+        ownerNotes: String,
+        body: String?,
+        pendingReason: String?,
+        transcriptionEngine: String,
+        transcriptionModel: String,
+        notesEndpoint: String,
+        notesModel: String,
+        to directory: MeetingDirectory
+    ) throws {
+        var lines: [String] = []
+        lines.append("---")
+        lines.append("title: \(yamlString(title))")
+        lines.append("date: \(ISO8601DateFormatter().string(from: date))")
+        lines.append("duration: \(Timecode.string(from: duration))")
+        lines.append("transcription_engine: \(yamlString(transcriptionEngine))")
+        lines.append("transcription_model: \(yamlString(transcriptionModel))")
+        lines.append("notes_endpoint: \(yamlString(notesEndpoint))")
+        lines.append("notes_model: \(yamlString(notesModel))")
+        lines.append("notes_state: \(body == nil ? "pending" : "written")")
+        lines.append("---")
+        lines.append("")
+
+        let typed = ownerNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty {
+            lines.append("## Notes you typed")
+            lines.append("")
+            lines.append(typed)
+            lines.append("")
+        }
+
+        if let body {
+            lines.append("## Notes written from the transcript")
+            lines.append("")
+            lines.append(body)
+        } else {
+            lines.append("## Notes are waiting")
+            lines.append("")
+            lines.append(pendingReason ?? "The notes endpoint did not answer. The transcript is saved.")
+        }
+        lines.append("")
+
+        try lines.joined(separator: "\n").write(to: directory.notesURL, atomically: true, encoding: .utf8)
+    }
+
+    public func writeMeta(_ meta: MeetingMeta, to directory: MeetingDirectory) throws {
+        try MeetingStore.metaEncoder.encode(meta).write(to: directory.metaURL, options: .atomic)
+    }
+
+    public func readMeta(in directory: MeetingDirectory) throws -> MeetingMeta {
+        try MeetingStore.metaDecoder.decode(MeetingMeta.self, from: Data(contentsOf: directory.metaURL))
+    }
+
+    /// One encoder and one decoder, so what is written is always what can be
+    /// read back. Dates are ISO 8601 on both sides.
+    public static let metaEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    public static let metaDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    /// The recording is the most sensitive thing in the directory. Unless the
+    /// owner asked to keep it, it goes as soon as the transcript exists.
+    public func deleteAudio(in directory: MeetingDirectory) throws {
+        guard fileManager.fileExists(atPath: directory.audioDirectory.path) else { return }
+        for file in try fileManager.contentsOfDirectory(at: directory.audioDirectory, includingPropertiesForKeys: nil) {
+            try fileManager.removeItem(at: file)
+        }
+    }
+
+    public func meetings() throws -> [MeetingDirectory] {
+        guard fileManager.fileExists(atPath: root.path) else { return [] }
+        let entries = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
+        return
+            entries
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .map(MeetingDirectory.init(url:))
+    }
+
+    private func yamlString(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+}
