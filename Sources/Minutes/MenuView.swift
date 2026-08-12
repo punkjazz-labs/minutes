@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuView: View {
     @ObservedObject var controller: RecordingController
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -138,6 +139,14 @@ struct MenuView: View {
 
     private var footer: some View {
         HStack {
+            Button("Meetings") {
+                // An accessory app has no dock icon, so a window it opens has
+                // to be brought forward by hand.
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: MinutesWindow.library)
+            }
+            .controlSize(.small)
+
             Button(controller.lastMeetingURL == nil ? "Open notes folder" : "Open this meeting") {
                 controller.openNotesFolder()
             }

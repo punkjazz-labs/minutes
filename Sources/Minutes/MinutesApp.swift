@@ -22,6 +22,20 @@ struct MinutesApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("minutes", id: MinutesWindow.library) {
+            LibraryView()
+        }
+        .defaultSize(width: 900, height: 540)
+
+        // One window per meeting, so the library stays where it is while a
+        // meeting is read.
+        WindowGroup(id: MinutesWindow.meeting, for: String.self) { $path in
+            if let path {
+                MeetingDetailView(path: path)
+            }
+        }
+        .defaultSize(width: 1_020, height: 620)
+
         Settings {
             SettingsView(controller: controller)
         }
