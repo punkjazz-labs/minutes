@@ -41,6 +41,9 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
     public var notesState: String
     public var tracksRecorded: [String]
     public var tracksMissing: [String]
+    /// Tracks that ran but carried nothing but digital zero. Absent from
+    /// meetings written before system audio was captured at all.
+    public var tracksSilent: [String]?
     public var audioKept: Bool
     public var syncService: String?
 
@@ -58,6 +61,7 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
         notesState: String,
         tracksRecorded: [String],
         tracksMissing: [String],
+        tracksSilent: [String] = [],
         audioKept: Bool,
         syncService: String? = nil
     ) {
@@ -74,6 +78,7 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
         self.notesState = notesState
         self.tracksRecorded = tracksRecorded
         self.tracksMissing = tracksMissing
+        self.tracksSilent = tracksSilent
         self.audioKept = audioKept
         self.syncService = syncService
     }

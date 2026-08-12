@@ -31,8 +31,12 @@ public struct Transcript: Sendable, Equatable {
     public var model: String
     public var recordedAt: Date
     public var duration: TimeInterval
-    /// Tracks that produced no audio at all, named on the page rather than left out.
+    /// Tracks that never ran, named on the page rather than left out.
     public var missingTracks: [AudioTrack]
+    /// Tracks that ran and carried nothing but digital zero. Said separately
+    /// from a track that never ran, because they are different facts and the
+    /// owner can act on them differently.
+    public var silentTracks: [AudioTrack]
 
     public init(
         segments: [TranscriptSegment],
@@ -40,7 +44,8 @@ public struct Transcript: Sendable, Equatable {
         model: String,
         recordedAt: Date,
         duration: TimeInterval,
-        missingTracks: [AudioTrack] = []
+        missingTracks: [AudioTrack] = [],
+        silentTracks: [AudioTrack] = []
     ) {
         self.segments = segments.sorted { $0.start < $1.start }
         self.engine = engine
@@ -48,6 +53,16 @@ public struct Transcript: Sendable, Equatable {
         self.recordedAt = recordedAt
         self.duration = duration
         self.missingTracks = missingTracks
+        self.silentTracks = silentTracks
+    }
+
+    /// True when both sides of the meeting were actually heard. The warning
+    /// about one side only is driven by this, so it disappears when the second
+    /// track carried signal and never merely because a second track existed.
+    public var bothSidesWereHeard: Bool {
+        AudioTrack.allCases.allSatisfy { track in
+            !missingTracks.contains(track) && !silentTracks.contains(track)
+        }
     }
 
     public var plainText: String {
@@ -64,6 +79,10 @@ public struct Transcript: Sendable, Equatable {
         lines.append("Speaker labels come from which device the audio arrived on, not from voice recognition.")
         for track in missingTracks {
             lines.append("No audio was recorded on the \(track.label) track.")
+        }
+        for track in silentTracks where !missingTracks.contains(track) {
+            lines.append(
+                "The \(track.label) track was recorded but every sample was digital zero, so nothing was heard on it.")
         }
         lines.append("")
         if segments.isEmpty {

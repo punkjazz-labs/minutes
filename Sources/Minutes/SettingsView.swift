@@ -76,8 +76,11 @@ struct SettingsView: View {
             }
 
             Section("What this build does") {
-                Text("Microphone capture works. System audio, meaning the other people in the meeting, is not captured in v0.1.")
+                Text("Both sides are recorded: your microphone, and what this Mac plays, which is the other people in the meeting. The second one is listened to on its way out, so you keep hearing the meeting normally.")
                     .font(.caption)
+                Text(SystemAudioCapture.permissionNotice)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Text(controller.privacyClaim)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
