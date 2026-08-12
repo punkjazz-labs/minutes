@@ -76,11 +76,6 @@ hardware rather than assumed.
   arrived on, not from voice recognition, and the transcript says so. Everyone
   on the far end of the call is one speaker called `Others`, because they
   arrive on one track.
-- **The tap has not been proved to hear anything on this machine.** The audio
-  graph builds and feeds a continuous stream, and every sample of it was
-  digital zero from a bare command line binary, which is what a machine that
-  was granted nothing sounds like. The manual steps to prove it properly are
-  under permissions, below.
 - **The notes are not streamed.** One request, one answer. Streaming is a
   change behind the `NotesGenerating` protocol.
 - **No traceability control in the interface.** The model is asked for
@@ -109,26 +104,21 @@ numbers and not estimates:
 - The full path, transcribe then write the meeting folder then ask for notes,
   ran against a live LiteLLM gateway and produced `notes.md`, `transcript.md`
   and `meta.json`, and deleted the audio.
-- The Core Audio tap builds and runs. From a bare command line binary,
-  `minutes-cli record 4 --source system` created the tap, the aggregate device
-  and the IO proc without an error, delivered a continuous stream for the whole
-  four seconds, and wrote `RIFF WAVE, Microsoft PCM, 16 bit, mono 16000 Hz`,
-  66213 frames, 4.1 seconds. **Every sample was digital zero**, with sound
-  playing through the speakers at the time. macOS grants the audio capture
-  permission to a signed bundle and not to a bare executable, and it never
-  tells an app whether it was granted, so this is what a refusal looks like and
-  the app reported it as one. It is not evidence that the tap can hear a
-  meeting, and it is not claimed as any.
+- **System audio capture records the other side.** On 2026-08-12 the signed
+  bundle was run, the permission granted at the prompt, and a 37 second meeting
+  recorded while a video played through the speakers. Both tracks were
+  recorded, neither was silent, and the transcript carried the video's speech
+  on the `Others` track word for word, timestamped, alongside the owner's voice
+  on the `You` track. The audio was deleted after transcription, as the default
+  says. The failure path ran in the same session: the notes endpoint did not
+  answer, the notes were left pending, and the transcript survived.
+- From a bare command line binary the same tap delivers a continuous stream of
+  digital zeros, because macOS grants the permission to a signed bundle only
+  and never says so. The app reported that run as a refusal, which is the
+  honest-silence path working.
 
 Not measured, and not claimed:
 
-- **That system audio capture actually records the other side.** Nobody has yet
-  run the signed bundle, granted the permission and watched a real signal
-  arrive. The manual steps are below and this line stays until somebody does
-  them and writes the numbers here.
-- Whether the aggregate device is shaped correctly in the way that matters. A
-  wrongly shaped aggregate also produces zeros, so the run above cannot tell
-  the difference between that and a permission that was never granted.
 - Whether a tap on this macOS version delivers all-zero PCM after several
   minutes. The rebuild path exists and is checked against a fake, and it has
   never fired against a real tap.
