@@ -30,16 +30,41 @@ work and which are stubs.
   timestamped quotes as anchors, and puts anything unanchored under its own
   heading.
 - **Storage as plain files.** One directory per meeting, Markdown and JSON, no
-  database and no sync. Audio is deleted once the transcript exists unless you
-  ask to keep it.
+  database and no sync. What you typed is written to its own `bullets.md` and
+  is only ever read again. Audio is deleted once the transcript exists unless
+  you ask to keep it.
+- **A meeting library.** Meetings in the menu bar popover opens a window
+  listing every meeting in the notes folder
+  with its date, length and notes state, read from the files rather than from
+  an index. Rename edits the row and renames the directory. Files reveals it in
+  Finder. Delete asks first and then removes the whole directory, audio
+  included. The header names the notes folder and the service it syncs to.
+- **Search across meetings.** Titles, notes and transcripts, with the words
+  around the match shown under the title of each meeting that matched.
+- **Traceable notes.** The timestamps the model already writes become chips.
+  Clicking one scrolls the transcript to that line and marks it. A line whose
+  timestamp is not in the transcript is not given a link that lands on the
+  wrong words: it is moved to a box that says it is not in the transcript,
+  along with anything the model itself filed as unanchored.
+- **Write notes again.** Notes generation runs again for a meeting already on
+  disk, from the same two inputs. `bullets.md` is read and never written, and
+  `notes.md` is replaced only once the endpoint has answered, so a failed
+  re-run costs nothing. A meeting whose notes failed shows as waiting for the
+  Spark until a re-run succeeds.
+- **A question box under the transcript.** The question and the transcript go
+  to the same endpoint the notes use, under its own operation name. The answer
+  carries the same timestamp chips and jumps the same way. The questions and
+  answers are held in memory while the app runs and are written nowhere.
 - **A folder that syncs is named.** If the notes folder is inside Dropbox,
   iCloud Drive, OneDrive, Google Drive or Box, the app says which service it
   copies to, and the privacy claim on screen names it too.
 - **A command line face**, `minutes-cli`, so the model download, a
   transcription, the endpoint probe and the whole meeting path can be run
   without a window or a permission prompt.
-- **Checks**, `minutes-checks`, 125 assertions covering the three hardware
-  seams with fakes behind all of them.
+- **Checks**, `minutes-checks`, 205 assertions covering the three hardware
+  seams with fakes behind all of them, plus anchor parsing, search, rename,
+  re-run and the question box against a stub endpoint. None of them needs a
+  microphone, a permission or the network.
 
 ## What is stubbed or missing in v0.1
 
@@ -53,15 +78,22 @@ work and which are stubs.
 - **No speaker diarization.** Speaker labels come from which device the audio
   arrived on, not from voice recognition, and the transcript says so. With one
   track recorded, everything is labelled `You`.
-- **The notes are not streamed.** One request, one answer. Streaming is a
-  change behind the `NotesGenerating` protocol.
-- **No traceability control in the interface.** The model is asked for
-  timestamps in the notes text, and it gives them, but there is no click that
-  jumps from a note line to the transcript line.
-- **No re-run of enhance from the interface.** Notes are written once per
-  meeting. `minutes-cli notes <transcript>` can be run again by hand.
-- **No meeting library.** No list, no search, no rename, no delete. There is a
-  button that opens the folder in Finder.
+- **The notes are not streamed.** One request, one answer, for the notes and
+  for a question alike. Streaming is a change behind the `NotesGenerating` and
+  `Asking` protocols.
+- **An anchor is an exact timestamp match and nothing cleverer.** A chip
+  appears when the transcript has a line at exactly the timecode the model
+  wrote. A model that is a second out produces a line in the box that says it
+  is not in the transcript, rather than a link to the wrong words.
+- **Long meetings are sent whole.** No chunking with overlap and no summary of
+  summaries yet, so a meeting long enough to exceed the endpoint's context
+  window fails as a server error rather than being split.
+- **The notes pane is not a Markdown renderer.** Headings, bullets and plain
+  lines are shown; tables, links and nested lists are shown as the plain text
+  they are written in.
+- **Questions and answers are not kept.** They live in memory while the app
+  runs and are gone when it quits. Nothing about them is written to the
+  meeting folder.
 - **No calendar integration and no automatic meeting detection.**
 - **The build is signed ad-hoc, not notarised.** It is fit for the machine that
   built it and not for handing to anyone. A Developer ID identity and
@@ -153,10 +185,15 @@ Default `~/Documents/minutes`, one directory per meeting:
 ```
 2026-08-04-1400-pricing-call/
   notes.md        front matter naming the engine, the model and the endpoint used
+  bullets.md      what you typed, word for word, written once and only read after
   transcript.md   timestamped, with the track each line came from
   audio/          mic.wav, deleted after transcription unless you keep it
   meta.json       durations, engine, model, what ran where, what happened to the audio
 ```
+
+Renaming a meeting renames the directory and the title in `meta.json`. It does
+not rewrite `notes.md` or `transcript.md`, because a rename must never be able
+to lose what was said.
 
 ## The endpoint
 
