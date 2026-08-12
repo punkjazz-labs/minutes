@@ -64,6 +64,9 @@ public struct MeetingPipeline: Sendable {
         let directory = try store.createMeeting(title: title, date: startedAt)
         log("Meeting folder created at \(directory.url.lastPathComponent).")
 
+        // Written before anything else can fail, and never written again.
+        try store.writeBullets(ownerNotes, to: directory)
+
         var segments: [TranscriptSegment] = []
         var duration: TimeInterval = 0
         var totalProcessing: TimeInterval = 0

@@ -22,6 +22,25 @@ public enum Timecode {
         let total = max(0, Int(seconds.rounded(.down)))
         return String(format: "%02d:%02d:%02d", total / 3_600, (total % 3_600) / 60, total % 60)
     }
+
+    /// Reads a `HH:MM:SS` timecode back. Nil for anything that is not one, so a
+    /// square bracket in ordinary prose is never mistaken for an anchor.
+    public static func seconds(from text: String) -> TimeInterval? {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        var total = 0
+        for part in parts {
+            guard part.count == 2, let value = Int(part), value >= 0 else { return nil }
+            total = total * 60 + value
+        }
+        return TimeInterval(total)
+    }
+
+    /// The form shown on an anchor chip. The hour is dropped when it is zero,
+    /// because most meetings never reach one.
+    public static func short(_ timecode: String) -> String {
+        timecode.hasPrefix("00:") ? String(timecode.dropFirst(3)) : timecode
+    }
 }
 
 /// A whole meeting's speech, plus the honest provenance of it.

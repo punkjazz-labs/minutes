@@ -19,6 +19,9 @@ public struct MeetingDirectory: Sendable, Equatable {
     public var transcriptURL: URL { url.appendingPathComponent("transcript.md") }
     public var notesURL: URL { url.appendingPathComponent("notes.md") }
     public var metaURL: URL { url.appendingPathComponent("meta.json") }
+    /// What the owner typed, in its own file. Notes can be written again; this
+    /// file is only ever read after the meeting ends.
+    public var bulletsURL: URL { url.appendingPathComponent("bullets.md") }
 
     public func audioURL(for track: AudioTrack) -> URL {
         audioDirectory.appendingPathComponent(track.fileName)
@@ -77,6 +80,14 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
         self.audioKept = audioKept
         self.syncService = syncService
     }
+}
+
+/// The headings `notes.md` is written with. They are named once so the writer
+/// and the reader can never drift apart.
+public enum NotesSection {
+    public static let owner = "## Notes you typed"
+    public static let model = "## Notes written from the transcript"
+    public static let pending = "## Notes are waiting"
 }
 
 public enum MeetingSlug {
@@ -177,24 +188,35 @@ public struct MeetingStore: Sendable {
 
         let typed = ownerNotes.trimmingCharacters(in: .whitespacesAndNewlines)
         if !typed.isEmpty {
-            lines.append("## Notes you typed")
+            lines.append(NotesSection.owner)
             lines.append("")
             lines.append(typed)
             lines.append("")
         }
 
         if let body {
-            lines.append("## Notes written from the transcript")
+            lines.append(NotesSection.model)
             lines.append("")
             lines.append(body)
         } else {
-            lines.append("## Notes are waiting")
+            lines.append(NotesSection.pending)
             lines.append("")
             lines.append(pendingReason ?? "The notes endpoint did not answer. The transcript is saved.")
         }
         lines.append("")
 
         try lines.joined(separator: "\n").write(to: directory.notesURL, atomically: true, encoding: .utf8)
+    }
+
+    /// The owner's own words, written once and read for every re-run. Keeping
+    /// them in their own file is what makes "write notes again" safe: the notes
+    /// file is rewritten, this one is not.
+    public func writeBullets(_ text: String, to directory: MeetingDirectory) throws {
+        try text.write(to: directory.bulletsURL, atomically: true, encoding: .utf8)
+    }
+
+    public func readBullets(in directory: MeetingDirectory) -> String? {
+        try? String(contentsOf: directory.bulletsURL, encoding: .utf8)
     }
 
     public func writeMeta(_ meta: MeetingMeta, to directory: MeetingDirectory) throws {

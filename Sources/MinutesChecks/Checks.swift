@@ -13,6 +13,8 @@ struct Checks {
             try storageChecks(run)
             await notesChecks(run)
             try await pipelineChecks(run)
+            try await libraryChecks(run)
+            await askChecks(run)
         } catch {
             run.failed("a check threw: \(error.localizedDescription)")
         }

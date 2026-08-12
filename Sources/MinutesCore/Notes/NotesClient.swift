@@ -78,6 +78,9 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
     public let apiKey: String
     public let appID: String
     public let operation: String
+    /// The operation name a question about a meeting is routed under, so the
+    /// gateway can tell the two kinds of request apart.
+    public let askOperation: String
     private let session: URLSession
     private let timeout: TimeInterval
 
@@ -87,6 +90,7 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
         apiKey: String,
         appID: String = MinutesBuild.appID,
         operation: String = "meeting-notes-enhance",
+        askOperation: String = "meeting-ask",
         timeout: TimeInterval = 300,
         session: URLSession = .shared
     ) {
@@ -95,6 +99,7 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
         self.apiKey = apiKey
         self.appID = appID
         self.operation = operation
+        self.askOperation = askOperation
         self.timeout = timeout
         self.session = session
     }
@@ -132,6 +137,19 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
     }
 
     public func enhance(_ notesRequest: NotesRequest) async throws -> NotesResult {
+        let content = try await complete(
+            system: NotesPrompt.system,
+            user: NotesPrompt.user(
+                title: notesRequest.title,
+                ownerNotes: notesRequest.ownerNotes,
+                transcript: notesRequest.transcript),
+            operation: operation)
+        return NotesResult(markdown: content, model: model, endpoint: baseURL)
+    }
+
+    /// One chat completion, shared by the notes and by a question about a
+    /// meeting, so both are held to the same errors and the same routing.
+    func complete(system: String, user: String, operation: String) async throws -> String {
         var request = try self.request(path: "/chat/completions", method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -139,14 +157,8 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
             "model": model,
             "temperature": 0.2,
             "messages": [
-                ["role": "system", "content": NotesPrompt.system],
-                [
-                    "role": "user",
-                    "content": NotesPrompt.user(
-                        title: notesRequest.title,
-                        ownerNotes: notesRequest.ownerNotes,
-                        transcript: notesRequest.transcript),
-                ],
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
             ],
             "metadata": ["operation": operation],
         ]
@@ -170,11 +182,7 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
             throw NotesError.emptyResponse
         }
 
-        return NotesResult(
-            markdown: content.trimmingCharacters(in: .whitespacesAndNewlines),
-            model: model,
-            endpoint: baseURL
-        )
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
