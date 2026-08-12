@@ -61,14 +61,13 @@ func audioChecks(_ run: CheckRun) throws {
     run.expect(silentResult.signal.isAllZero, "a silent capture is detected")
     run.expect(silentResult.summary.contains("Nothing was heard"), "a silent capture says nothing was heard")
 
-    // System audio is a stub and says so rather than writing silence.
+    // System audio is a real Core Audio tap now. It cannot claim to know
+    // whether macOS granted the permission, because there is no API to ask.
     let systemAudio = SystemAudioCapture()
-    run.expect(!systemAudio.isAvailable, "system audio reports itself unavailable in v0.1")
-    run.expect(systemAudio.unavailableReason != nil, "system audio explains why it is unavailable")
-    do {
-        try systemAudio.start(writingTo: scratch.appendingPathComponent("never.wav"))
-        run.failed("system audio must refuse to start rather than write a silent file")
-    } catch {
-        run.expect(true, "system audio refuses to start rather than write a silent file")
-    }
+    run.expect(systemAudio.isAvailable, "system audio is attempted rather than refused")
+    run.equal(systemAudio.unavailableReason, nil, "there is no reason to give when the tap can be attempted")
+    run.expect(
+        SystemAudioCapture.permissionNotice.contains("never tells an app whether it was granted"),
+        "the app says plainly that it cannot read this permission")
+    run.equal(systemAudio.rebuildCount, 0, "a tap that has not run has rebuilt nothing")
 }

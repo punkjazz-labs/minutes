@@ -9,6 +9,7 @@ struct Checks {
 
         do {
             try audioChecks(run)
+            try systemAudioChecks(run)
             transcriptChecks(run)
             try storageChecks(run)
             await notesChecks(run)
