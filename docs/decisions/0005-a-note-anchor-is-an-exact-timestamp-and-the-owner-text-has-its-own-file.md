@@ -1,4 +1,4 @@
-# 0004: a note anchor is an exact timestamp, and what the owner typed has its own file
+# 0005: a note anchor is an exact timestamp, and what the owner typed has its own file
 
 Date: 2026-08-12
 Status: accepted for the library and the meeting window
