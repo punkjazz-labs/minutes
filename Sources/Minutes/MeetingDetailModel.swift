@@ -3,10 +3,10 @@ import Foundation
 import MinutesCore
 import SwiftUI
 
-/// Window ids, so the menu and the library open the same windows.
+/// The id of the app's one window, so the menu opens the window that is
+/// already there rather than another one.
 enum MinutesWindow {
     static let library = "minutes-library"
-    static let meeting = "minutes-meeting"
 }
 
 /// The endpoint the app talks to, built from the settings in force.

@@ -73,8 +73,6 @@ struct MeetingDetailView: View {
             }
         }
         .background(Ink.surface)
-        .frame(minWidth: 820, minHeight: 480)
-        .preferredColorScheme(.dark)
         .navigationTitle(model.title)
         .onAppear { model.load() }
         .environment(

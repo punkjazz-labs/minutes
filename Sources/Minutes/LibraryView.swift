@@ -1,12 +1,37 @@
 import MinutesCore
 import SwiftUI
 
+/// The one window the app has. The list is the root and a meeting is pushed
+/// onto it, so the back control in the title bar is the way out of a meeting
+/// and there is never a second window to find.
+struct LibraryWindow: View {
+
+    @StateObject private var model = LibraryModel()
+    @State private var path: [String] = []
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            LibraryView(model: model, open: { path.append($0.id) })
+                .navigationTitle("minutes")
+                .navigationDestination(for: String.self) { MeetingDetailView(path: $0) }
+        }
+        .background(Ink.surface)
+        .frame(minWidth: 820, minHeight: 480)
+        .preferredColorScheme(.dark)
+        .onChange(of: path) { _, current in
+            // Coming back from a meeting whose notes were written again, or
+            // whose title was changed, shows the new state rather than the old.
+            if current.isEmpty { model.reload() }
+        }
+    }
+}
+
 /// The meetings on disk, as a dense table. One row per meeting, the search
 /// snippet under the title, and the three row actions on the right.
 struct LibraryView: View {
 
-    @StateObject private var model = LibraryModel()
-    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var model: LibraryModel
+    let open: (MeetingSummary) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +46,7 @@ struct LibraryView: View {
                             hit: hit,
                             model: model,
                             selected: model.selection == hit.id,
-                            open: { open(hit.meeting) })
+                            open: { show(hit.meeting) })
                         HLine()
                     }
                 }
@@ -37,8 +62,6 @@ struct LibraryView: View {
             }
         }
         .background(Ink.surface)
-        .frame(minWidth: 720, minHeight: 360)
-        .preferredColorScheme(.dark)
         .onAppear { model.reload() }
         .confirmationDialog(
             model.pendingDelete?.title ?? "",
@@ -105,9 +128,9 @@ struct LibraryView: View {
         .padding(.vertical, 7)
     }
 
-    private func open(_ meeting: MeetingSummary) {
+    private func show(_ meeting: MeetingSummary) {
         model.selection = meeting.id
-        openWindow(id: MinutesWindow.meeting, value: meeting.directory.url.path)
+        open(meeting)
     }
 }
 
