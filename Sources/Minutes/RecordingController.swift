@@ -3,8 +3,8 @@ import Foundation
 import MinutesCore
 import SwiftUI
 
-/// Drives one meeting: start the microphone, keep the meter honest while it
-/// runs, then hand the recordings to the pipeline.
+/// Drives one meeting: start both tracks, keep the meter honest while they
+/// run, then hand the recordings to the pipeline.
 @MainActor
 final class RecordingController: ObservableObject {
 
@@ -24,6 +24,7 @@ final class RecordingController: ObservableObject {
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0
     @Published private(set) var capturedSilence = false
+    @Published private(set) var systemAudioSilence = false
     @Published private(set) var log: [String] = []
     @Published private(set) var lastMeetingURL: URL?
     @Published private(set) var modelReady: Bool
@@ -43,6 +44,8 @@ final class RecordingController: ObservableObject {
     private var ticker: Timer?
     private var startedAt: Date?
     private var recordingURL: URL?
+    private var systemAudioRunning = false
+    private var systemNotesShown = 0
 
     private let firstRunKey = "minutes.firstRunNoticeAcknowledged"
 
@@ -63,7 +66,21 @@ final class RecordingController: ObservableObject {
 
     var isRecording: Bool { phase == .recording }
 
-    var systemAudioNotice: String? { systemAudio.unavailableReason }
+    /// What to say about the other side of the meeting. Before recording this
+    /// is how the permission works, because macOS never reports it. While
+    /// recording it is what the track has actually carried so far, which is the
+    /// only honest thing an app can say about a tap.
+    var systemAudioNotice: String? {
+        if let reason = systemAudio.unavailableReason { return reason }
+        guard isRecording else { return SystemAudioCapture.permissionNotice }
+        guard systemAudioRunning else {
+            return "The system audio tap is not running, so only your side of this meeting is being recorded."
+        }
+        if systemAudioSilence {
+            return "Nothing has been heard from the other side yet. That is either a quiet meeting or a permission macOS never granted, and minutes cannot tell which until something is heard."
+        }
+        return nil
+    }
 
     var microphoneNotice: String? { microphone.unavailableReason }
 
@@ -191,11 +208,16 @@ final class RecordingController: ObservableObject {
         guard phase == .idle || phase == .finished else { return }
         log = []
         capturedSilence = false
+        systemAudioSilence = false
+        systemNotesShown = 0
         elapsed = 0
         level = 0
 
+        let session = UUID().uuidString
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minutes-mic-\(UUID().uuidString).wav")
+            .appendingPathComponent("minutes-mic-\(session).wav")
+        let systemURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minutes-system-\(session).wav")
 
         Task { @MainActor in
             if MicrophoneCapture.permissionState == .undetermined {
@@ -206,12 +228,25 @@ final class RecordingController: ObservableObject {
                 recordingURL = url
                 startedAt = Date()
                 phase = .recording
-                append("Recording started. Microphone only in v0.1.")
-                if let notice = systemAudio.unavailableReason { append(notice) }
+                append("Recording started.")
                 startTicker()
             } catch {
                 append("Recording did not start: \(error.localizedDescription)")
                 phase = .idle
+                return
+            }
+
+            // The other side is a separate track and a separate risk. If the
+            // tap will not start, the meeting still gets recorded, and the log
+            // says which half it has.
+            do {
+                try systemAudio.start(writingTo: systemURL)
+                systemAudioRunning = true
+                append("Recording what this Mac plays as well, so the other side of the meeting is on its own track.")
+            } catch {
+                systemAudioRunning = false
+                append("System audio did not start: \(error.localizedDescription)")
+                append("Only your side of this meeting is being recorded.")
             }
         }
     }
@@ -229,7 +264,22 @@ final class RecordingController: ObservableObject {
             return
         }
 
-        append(captured.summary)
+        var captures = [captured]
+        var missingTracks: [AudioTrack] = []
+        if systemAudioRunning {
+            do {
+                captures.append(try systemAudio.stop())
+            } catch {
+                missingTracks.append(.others)
+                append("The system audio track could not be closed: \(error.localizedDescription)")
+            }
+        } else {
+            missingTracks.append(.others)
+        }
+        systemAudioRunning = false
+
+        // Every track is summarised by the pipeline, in the order it processes
+        // them, so nothing is reported twice or reported for one track only.
         let meetingTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? defaultTitle()
             : title
@@ -255,8 +305,8 @@ final class RecordingController: ObservableObject {
                     title: meetingTitle,
                     startedAt: started,
                     ownerNotes: ownerNotes,
-                    captures: [captured],
-                    missingTracks: [.others]
+                    captures: captures,
+                    missingTracks: missingTracks
                 ) { message in
                     Task { @MainActor in self.append(message) }
                 }
@@ -304,6 +354,18 @@ final class RecordingController: ObservableObject {
         // A tap or a device that has stopped feeding looks exactly like a
         // quiet room, so the app measures instead of assuming.
         capturedSilence = signal.isAllZero || signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: 10)
+
+        if systemAudioRunning {
+            let systemSignal = systemAudio.signal
+            systemAudioSilence = systemSignal.isAllZero
+            // Anything the tap had to do, such as rebuilding itself, is said
+            // once and in the same activity log as everything else.
+            let notes = systemAudio.notes
+            if notes.count > systemNotesShown {
+                for note in notes[systemNotesShown...] { append(note) }
+                systemNotesShown = notes.count
+            }
+        }
     }
 
     private func append(_ message: String) {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Which device the audio arrived on. This is the whole of speaker labelling
-/// in v0.1: it is not voice recognition and the transcript says so.
+/// Which device the audio arrived on. This is the whole of speaker labelling:
+/// it is not voice recognition and the transcript says so.
 public enum AudioTrack: String, Codable, Sendable, CaseIterable {
     case me
     case others
@@ -27,12 +27,23 @@ public struct CaptureResult: Sendable {
     public let fileURL: URL
     public let duration: TimeInterval
     public let signal: SignalCheck
+    /// Anything the source had to do or could not do while it recorded, in
+    /// sentences fit for the activity log. A tap that was torn down and rebuilt
+    /// says so here, and so does an output device that changed mid-meeting.
+    public let notes: [String]
 
-    public init(track: AudioTrack, fileURL: URL, duration: TimeInterval, signal: SignalCheck) {
+    public init(
+        track: AudioTrack,
+        fileURL: URL,
+        duration: TimeInterval,
+        signal: SignalCheck,
+        notes: [String] = []
+    ) {
         self.track = track
         self.fileURL = fileURL
         self.duration = duration
         self.signal = signal
+        self.notes = notes
     }
 
     /// Plain sentence for the activity log. Never claims a recording is good
@@ -63,9 +74,10 @@ public enum CaptureError: Error, LocalizedError {
     }
 }
 
-/// One audio source writing one file. Both the real microphone and the system
-/// audio stub sit behind this, and so does the fixture used by the tests, so
-/// no test needs a microphone or a permission grant.
+/// One audio source writing one file. The real microphone, the Core Audio
+/// process tap that records what the other side says, and the fixture used by
+/// the checks all sit behind this, so no check needs a device or a permission
+/// grant.
 public protocol AudioCapturing: AnyObject {
     var track: AudioTrack { get }
 
@@ -78,6 +90,14 @@ public protocol AudioCapturing: AnyObject {
     /// Levels observed so far. Read while recording to drive a meter.
     var signal: SignalCheck { get }
 
+    /// What the source has had to do so far, in sentences fit for the activity
+    /// log. Empty for a source with nothing to report.
+    var notes: [String] { get }
+
     func start(writingTo url: URL) throws
     func stop() throws -> CaptureResult
+}
+
+extension AudioCapturing {
+    public var notes: [String] { [] }
 }

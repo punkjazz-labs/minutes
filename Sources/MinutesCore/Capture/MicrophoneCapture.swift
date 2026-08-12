@@ -8,18 +8,19 @@ import Foundation
 /// the meeting runs. It needs the microphone permission, which macOS only
 /// grants to a signed app bundle, so running the bare binary from
 /// `.build/debug` will be refused by the system.
+///
+/// The conversion and the level measurement live in `TrackWriter`, shared with
+/// the system audio tap, so both tracks of a meeting are written by the same
+/// code and cannot drift apart.
 public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
 
     public let track: AudioTrack = .me
 
     private let engine = AVAudioEngine()
     private let lock = NSLock()
-    private var writer: WAVWriter?
-    private var converter: AVAudioConverter?
-    private var signalState = SignalCheck()
+    private var writer: TrackWriter?
     private var outputURL: URL?
     private var recording = false
-    private var writeFailure: Error?
 
     public init() {}
 
@@ -39,7 +40,7 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
     public var signal: SignalCheck {
         lock.lock()
         defer { lock.unlock() }
-        return signalState
+        return writer?.signal ?? SignalCheck()
     }
 
     // MARK: - Permission
@@ -85,34 +86,17 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
             throw CaptureError.deviceFailure("The default input device reported no channels. Pick an input in System Settings, Sound.")
         }
 
-        guard
-            let targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: AudioFormat.sampleRate,
-                channels: AVAudioChannelCount(AudioFormat.channels),
-                interleaved: false
-            )
-        else {
-            throw CaptureError.deviceFailure("Could not describe the 16 kHz mono format the speech engine needs.")
-        }
-
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw CaptureError.deviceFailure("Could not convert \(Int(inputFormat.sampleRate)) Hz input to 16 kHz mono.")
-        }
-
-        let writer = try WAVWriter(url: url)
+        let writer = try TrackWriter(url: url)
+        try writer.prepare(sourceFormat: inputFormat)
 
         lock.lock()
         self.writer = writer
-        self.converter = converter
         self.outputURL = url
-        self.signalState = SignalCheck()
-        self.writeFailure = nil
         self.recording = true
         lock.unlock()
 
         input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
-            self?.consume(buffer, targetFormat: targetFormat)
+            self?.consume(buffer)
         }
 
         do {
@@ -141,59 +125,27 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
         lock.lock()
         let writer = self.writer
         let url = self.outputURL
-        let signal = self.signalState
-        let failure = self.writeFailure
         self.recording = false
         self.writer = nil
-        self.converter = nil
         lock.unlock()
 
         try writer?.close()
 
-        if let failure {
-            throw CaptureError.deviceFailure("Recording stopped after a write error: \(failure.localizedDescription)")
-        }
         guard let url, let writer else { throw CaptureError.notRecording }
 
-        return CaptureResult(track: track, fileURL: url, duration: writer.duration, signal: signal)
+        if let failure = writer.writeFailure {
+            throw CaptureError.deviceFailure("Recording stopped after a write error: \(failure.localizedDescription)")
+        }
+
+        return CaptureResult(track: track, fileURL: url, duration: writer.duration, signal: writer.signal)
     }
 
     // MARK: - Tap
 
-    private func consume(_ buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) {
+    private func consume(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        guard recording, let converter, let writer else {
-            lock.unlock()
-            return
-        }
+        let writer = recording ? self.writer : nil
         lock.unlock()
-
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-
-        var consumed = false
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, statusPointer in
-            if consumed {
-                statusPointer.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            statusPointer.pointee = .haveData
-            return buffer
-        }
-
-        guard status != .error, output.frameLength > 0, let channel = output.floatChannelData?[0] else { return }
-        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
-
-        lock.lock()
-        signalState.observe(samples)
-        do {
-            try writer.append(samples)
-        } catch {
-            writeFailure = error
-        }
-        lock.unlock()
+        writer?.append(buffer)
     }
 }

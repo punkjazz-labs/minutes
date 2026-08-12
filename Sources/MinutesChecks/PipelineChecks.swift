@@ -117,6 +117,96 @@ func pipelineChecks(_ run: CheckRun) async throws {
         run.expect(notes.contains("- do not lose this"), "a machine being off never costs what the owner typed")
     }
 
+    // Two real tracks: both sides land in the transcript under their own
+    // labels, both files are kept, and nothing claims a side is missing.
+    do {
+        let root = try Scratch.directory("pipeline-two-tracks")
+        var settings = AppSettings(notesFolderPath: root.path)
+        settings.keepAudioAfterTranscription = true
+
+        let systemURL = root.appendingPathComponent("system-source.wav")
+        let tap = SystemAudioCapture(
+            watchdogInterval: 0,
+            watchesOutputDevice: false,
+            source: { FakeSystemAudioSource(value: 0.5, seconds: 1) })
+        try tap.start(writingTo: systemURL)
+        let systemCapture = try tap.stop()
+
+        let outcome = try await makePipeline(settings: settings, root: root, notes: StubNotes(body: "notes", error: nil))
+            .run(
+                title: "Both sides",
+                startedAt: Date(timeIntervalSince1970: 0),
+                ownerNotes: "",
+                captures: [try staged(.me, in: root), systemCapture])
+
+        let transcript = try String(contentsOf: outcome.directory.transcriptURL, encoding: .utf8)
+        run.expect(transcript.contains("You: Let us talk about pricing."), "your side is labelled You")
+        run.expect(transcript.contains("Others: The renewal is in October."), "the tapped side is labelled Others")
+        run.expect(
+            !transcript.contains("No audio was recorded on"),
+            "nothing claims a side is missing when both sides were heard")
+        run.expect(
+            !transcript.contains("every sample was digital zero"),
+            "nothing claims a side was silent when both sides were heard")
+        run.expect(outcome.transcript.bothSidesWereHeard, "the transcript knows both sides were heard")
+
+        run.expect(
+            FileManager.default.fileExists(atPath: outcome.directory.audioURL(for: .me).path),
+            "mic.wav is stored under the meeting")
+        run.expect(
+            FileManager.default.fileExists(atPath: outcome.directory.audioURL(for: .others).path),
+            "system.wav is stored under the meeting")
+
+        let meta = try MeetingStore(root: root).readMeta(in: outcome.directory)
+        run.equal(meta.tracksRecorded.sorted(), ["me", "others"], "meta.json records both tracks")
+        run.equal(meta.tracksSilent ?? [], [], "meta.json records that neither track was silent")
+    }
+
+    // A tap that was granted nothing, next to a working microphone. The second
+    // track exists but carried no signal, and that is not the same thing as a
+    // meeting that was recorded properly.
+    do {
+        let root = try Scratch.directory("pipeline-silent-tap")
+        var settings = AppSettings(notesFolderPath: root.path)
+        settings.keepAudioAfterTranscription = true
+
+        let systemURL = root.appendingPathComponent("silent-source.wav")
+        let tap = SystemAudioCapture(
+            policy: TapRebuildPolicy(silenceThreshold: 0.2, maximumRebuilds: 1),
+            watchdogInterval: 0,
+            watchesOutputDevice: false,
+            source: { FakeSystemAudioSource(value: 0, seconds: 1) })
+        try tap.start(writingTo: systemURL)
+        tap.checkForStalledTap()
+        let systemCapture = try tap.stop()
+
+        let outcome = try await makePipeline(settings: settings, root: root, notes: StubNotes(body: "notes", error: nil))
+            .run(
+                title: "One side only",
+                startedAt: Date(timeIntervalSince1970: 0),
+                ownerNotes: "",
+                captures: [try staged(.me, in: root), systemCapture])
+
+        let transcript = try String(contentsOf: outcome.directory.transcriptURL, encoding: .utf8)
+        run.expect(
+            transcript.contains("The Others track was recorded but every sample was digital zero"),
+            "a track that heard nothing is named on the transcript")
+        run.expect(!outcome.transcript.bothSidesWereHeard, "a silent second track is not two sides recorded")
+        run.expect(
+            outcome.transcript.segments.allSatisfy { $0.track == .me },
+            "a silent track is never sent to the speech engine")
+        run.expect(
+            !FileManager.default.fileExists(atPath: outcome.directory.audioURL(for: .others).path),
+            "a silent track is discarded rather than saved as if it were a recording")
+        run.expect(
+            outcome.events.contains { $0.message.contains("Rebuilding the tap") },
+            "the rebuild the tap attempted is in the activity log")
+
+        let meta = try MeetingStore(root: root).readMeta(in: outcome.directory)
+        run.equal(meta.tracksSilent ?? [], ["others"], "meta.json names the track that heard nothing")
+        run.equal(meta.tracksRecorded, ["me"], "meta.json does not count a silent track as recorded")
+    }
+
     // A silent track.
     do {
         let root = try Scratch.directory("pipeline-silent")

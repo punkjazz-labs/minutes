@@ -1,7 +1,11 @@
 # 0002: system audio is stubbed in v0.1, behind the capture interface
 
 Date: 2026-08-04
-Status: accepted for v0.1
+Status: superseded on 2026-08-12. The stub was replaced in v0.2 by a real Core
+Audio process tap in `SystemAudioCapture`, built to the constraints listed
+below. The reasoning here is kept because it is why the tap is a tap and not
+ScreenCaptureKit or a virtual device. What the tap does when it goes quiet is
+decision 0004.
 
 ## Context
 
@@ -66,3 +70,17 @@ arrives.
 
 Reference implementation to read when writing it: `insidegui/AudioCap`, which
 is BSD-2. Not `makeusabrew/audiotee`, which has no licence file at all.
+
+## What v0.2 actually did
+
+`SystemAudioCapture` builds a stereo global tap that excludes this app's own
+process, wraps it in a private aggregate device whose main sub-device is the
+real output device, sets `kAudioAggregateDeviceTapAutoStartKey`, reads it with
+`AudioDeviceCreateIOProcIDWithBlock`, and converts whatever arrives to 16 kHz
+mono through the same `TrackWriter` the microphone uses. The tap layer is
+behind a `SystemAudioSource` protocol so the checks drive the capture object,
+the rebuild counting and the two-track write-up with a fake and never need the
+permission or a sound card.
+
+`NSAudioCaptureUsageDescription` is in the bundle plist. The permission still
+cannot be queried, so the app measures the track and says what it heard.

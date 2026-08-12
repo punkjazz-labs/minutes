@@ -71,15 +71,26 @@ public struct MeetingPipeline: Sendable {
         var duration: TimeInterval = 0
         var totalProcessing: TimeInterval = 0
         var totalAudio: TimeInterval = 0
+        var silentTracks: [AudioTrack] = []
+        var recordedTracks: [AudioTrack] = []
 
         for capture in captures {
             duration = max(duration, capture.duration)
             log(capture.summary)
+            // What the source had to do while it recorded, such as rebuilding a
+            // tap that went quiet, belongs in the same log as everything else.
+            for note in capture.notes { log(note) }
 
             if capture.signal.isAllZero {
+                silentTracks.append(capture.track)
                 log("Skipping transcription of the \(capture.track.label) track because it contains no signal.")
+                // A silent file next to a real one looks like a recording that
+                // heard nothing. It is discarded and named instead.
+                try? FileManager.default.removeItem(at: capture.fileURL)
+                log("The \(capture.track.label) recording was discarded rather than saved as a silent file.")
                 continue
             }
+            recordedTracks.append(capture.track)
 
             // Move the recording into the meeting folder before anything else
             // touches it.
@@ -107,7 +118,8 @@ public struct MeetingPipeline: Sendable {
             model: transcriber.modelName,
             recordedAt: startedAt,
             duration: duration,
-            missingTracks: missingTracks
+            missingTracks: missingTracks,
+            silentTracks: silentTracks
         )
         try store.writeTranscript(transcript, title: title, to: directory)
         log("Transcript written.")
@@ -155,8 +167,9 @@ public struct MeetingPipeline: Sendable {
             notesEndpoint: settings.notesBaseURL,
             notesModel: settings.notesModel,
             notesState: notesBody == nil ? "pending" : "written",
-            tracksRecorded: captures.map { $0.track.rawValue },
+            tracksRecorded: recordedTracks.map { $0.rawValue },
             tracksMissing: missingTracks.map { $0.rawValue },
+            tracksSilent: silentTracks.map { $0.rawValue },
             audioKept: settings.keepAudioAfterTranscription,
             syncService: store.syncService
         )

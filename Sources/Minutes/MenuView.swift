@@ -20,7 +20,10 @@ struct MenuView: View {
                 Notice(text: notice, tone: .warning)
             }
             if let notice = controller.systemAudioNotice {
-                Notice(text: notice, tone: .plain)
+                // Plain before a meeting, because it is how the permission
+                // works. A warning during one, because then it is a fact about
+                // this recording.
+                Notice(text: notice, tone: controller.isRecording ? .warning : .plain)
             }
             if !controller.modelReady {
                 Notice(

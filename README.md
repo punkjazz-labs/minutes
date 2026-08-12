@@ -4,10 +4,11 @@ A local meeting notes app for macOS. The recording and the transcript are made
 on your Mac. The transcript is sent to a model endpoint you choose to write the
 notes. Nothing is sent to any other service.
 
-This is v0.1. It is a runnable skeleton, and this file says plainly which parts
-work and which are stubs.
+This is v0.2. It records both sides of the meeting, and this file says plainly
+which parts work, which are stubs, and which have been measured on real
+hardware rather than assumed.
 
-## What works in v0.1
+## What works in v0.2
 
 - **A menu bar app.** SwiftUI `MenuBarExtra`, no dock icon. The menu bar item
   turns into a record dot while recording, because a Core Audio tap shows no
@@ -16,6 +17,32 @@ work and which are stubs.
   whatever format the device gives to 16 kHz mono, and writes a WAV while the
   meeting runs. Verified on this Mac by recording three seconds and reading the
   file back: `RIFF WAVE, Microsoft PCM, 16 bit, mono 16000 Hz`.
+- **System audio capture, meaning the other side of the meeting.** A Core Audio
+  process tap on everything this Mac plays, minus this app, inside a private
+  aggregate device whose main sub-device is the real output device, with
+  `kAudioAggregateDeviceTapAutoStartKey` set and read through
+  `AudioDeviceCreateIOProcIDWithBlock`. It observes the audio on its way out
+  and changes nothing, so you keep hearing the meeting. It is not
+  ScreenCaptureKit, it needs no virtual device, and it raises no screen
+  recording indicator. Meetings now write two tracks, `mic.wav` and
+  `system.wav`, and the transcript labels them `You` and `Others`.
+  **Whether the permission was actually granted on this machine has not been
+  measured. See what was measured, below.**
+- **A tap that goes quiet is rebuilt, counted and reported.** Thirty seconds of
+  unbroken digital zero rebuilds the tap, at most three times a meeting, and
+  every rebuild is named in the activity log as a retry rather than a
+  diagnosis. A quiet meeting and a permission that was never granted look
+  identical to any app, so minutes measures the track and says what it heard.
+  The reasoning is in
+  `docs/decisions/0004-a-quiet-tap-is-rebuilt-three-times-and-then-reported.md`.
+- **The output device changing mid-meeting is handled.** Connecting headphones
+  changes the device the aggregate is built around, so the app listens for that
+  change and rebuilds the tap around the new device, counting and logging it.
+- **A track that heard nothing is never written as if it were fine.** A silent
+  `system.wav` is discarded rather than saved next to a real `mic.wav`, the
+  transcript says the track was recorded and carried nothing, and `meta.json`
+  names it under `tracksSilent`. The warning that only one side was recorded
+  disappears only when the second track actually carried signal.
 - **A signal check that runs while recording.** Peak, RMS and runs of exact
   zeros. A capture that delivers digital silence is reported as such, on
   screen, in the activity log and in the transcript, and is never sent to the
@@ -61,23 +88,19 @@ work and which are stubs.
 - **A command line face**, `minutes-cli`, so the model download, a
   transcription, the endpoint probe and the whole meeting path can be run
   without a window or a permission prompt.
-- **Checks**, `minutes-checks`, 205 assertions covering the three hardware
-  seams with fakes behind all of them, plus anchor parsing, search, rename,
-  re-run and the question box against a stub endpoint. None of them needs a
-  microphone, a permission or the network.
+- **Checks**, `minutes-checks`, 260 assertions covering the hardware seams
+  with fakes behind all of them. The tap is behind a `SystemAudioSource`
+  protocol, so rebuild counting, the two-track write-up and the silence
+  reporting run without a permission grant or a sound card; anchor parsing,
+  search, rename, re-run and the question box run against a stub endpoint.
+  None of them needs a microphone, a permission or the network.
 
-## What is stubbed or missing in v0.1
+## What is stubbed or missing in v0.2
 
-- **System audio is not captured.** This is the big one: only your side of the
-  meeting is recorded. `SystemAudioCapture` conforms to the same protocol as
-  the microphone, reports itself unavailable with a reason, and refuses to
-  start rather than writing a silent `system.wav` that would look like a
-  recording. The approach for v0.2 is Core Audio process taps, and the
-  constraints it has to meet are written down in
-  `docs/decisions/0002-system-audio-is-stubbed-behind-the-capture-interface.md`.
 - **No speaker diarization.** Speaker labels come from which device the audio
-  arrived on, not from voice recognition, and the transcript says so. With one
-  track recorded, everything is labelled `You`.
+  arrived on, not from voice recognition, and the transcript says so. Everyone
+  on the far end of the call is one speaker called `Others`, because they
+  arrive on one track.
 - **The notes are not streamed.** One request, one answer, for the notes and
   for a question alike. Streaming is a change behind the `NotesGenerating` and
   `Asking` protocols.
@@ -113,15 +136,28 @@ numbers and not estimates:
 - The full path, transcribe then write the meeting folder then ask for notes,
   ran against a live LiteLLM gateway and produced `notes.md`, `transcript.md`
   and `meta.json`, and deleted the audio.
+- **System audio capture records the other side.** On 2026-08-12 the signed
+  bundle was run, the permission granted at the prompt, and a 37 second meeting
+  recorded while a video played through the speakers. Both tracks were
+  recorded, neither was silent, and the transcript carried the video's speech
+  on the `Others` track word for word, timestamped, alongside the owner's voice
+  on the `You` track. The audio was deleted after transcription, as the default
+  says. The failure path ran in the same session: the notes endpoint did not
+  answer, the notes were left pending, and the transcript survived.
+- From a bare command line binary the same tap delivers a continuous stream of
+  digital zeros, because macOS grants the permission to a signed bundle only
+  and never says so. The app reported that run as a refusal, which is the
+  honest-silence path working.
 
 Not measured, and not claimed:
 
+- Whether a tap on this macOS version delivers all-zero PCM after several
+  minutes. The rebuild path exists and is checked against a fake, and it has
+  never fired against a real tap.
 - Word error rate against a hand-corrected transcript of a real hour-long
   meeting. The product spec asks for this and it needs real meeting audio.
 - Realtime factor and peak memory on an hour of audio.
 - Anything at all about a fallback engine. Only FluidAudio was run.
-- Whether a tap delivers all-zero PCM after several minutes on this macOS
-  version, since taps are not implemented yet.
 
 ## Build and run
 
@@ -145,7 +181,8 @@ even raises the prompt.
 swift run minutes-cli settings                      # what is in force, and where notes go
 swift run minutes-cli probe                         # ask the endpoint for its models
 swift run minutes-cli fetch-models                  # download the speech model
-swift run minutes-cli record 5                      # record and report what arrived
+swift run minutes-cli record 5                      # record the microphone and report what arrived
+swift run minutes-cli record 5 --source system      # the same for the system audio tap
 swift run minutes-cli transcribe meeting.wav        # transcribe and print, with timings
 swift run minutes-cli notes transcript.md           # notes from an existing transcript
 swift run minutes-cli meeting meeting.wav --title T # the whole path
@@ -160,16 +197,40 @@ Environment overrides, for a one-off run against another endpoint or folder:
 - **Microphone.** Needed and used. macOS asks the first time you record from
   the app bundle. `NSMicrophoneUsageDescription` is in
   `packaging/macos/Info.plist`.
-- **Audio capture, meaning system audio.** Not used in v0.1.
-  `NSAudioCaptureUsageDescription` is already in the plist because it has to be
-  typed in by hand and there is no public API to query or request that
-  permission. When taps land, the app will have to handle being granted
-  nothing and recording silence.
+- **Audio capture, meaning system audio.** Needed and used since v0.2.
+  `NSAudioCaptureUsageDescription` is in the plist because it has to be typed
+  in by hand. There is no public API to query or request this one, so the app
+  cannot show its own permission state and does not pretend to: it measures
+  what the track carried and says that instead.
 - **Screen recording.** Not needed and not requested. The app does not use
   ScreenCaptureKit.
 
 Because the bundle is signed ad-hoc, its TCC identity changes if it is rebuilt
 with a different identity, and macOS will ask again.
+
+### Proving system audio works, by hand
+
+This is the part no automated check and no bare binary can do, because macOS
+grants the permission to a signed bundle and only in answer to a prompt a
+person clicks. Ten minutes, once:
+
+1. `make app`, then `open build/Minutes.app`.
+2. Click the menu bar item and press Record. Answer the macOS prompt asking to
+   record what your Mac plays. If no prompt appears, open System Settings,
+   Privacy and Security, and look for minutes under the audio recording entry.
+3. While it records, play something with sound for ten seconds. `afplay
+   /System/Library/Sounds/Glass.aiff` in a terminal is enough, or unmute a
+   video.
+4. Press Stop and write up. Expect the activity log to say
+   `Others: 10.x s recorded, peak level 0.xx.` and expect no line saying
+   nothing was heard, no rebuild lines, and no line about only one side being
+   recorded.
+5. Open the meeting folder. With `keep audio` on, expect both `audio/mic.wav`
+   and `audio/system.wav`, and expect `transcript.md` to carry `Others:` lines.
+
+If step 4 says every sample was digital zero, the permission was not granted.
+That is the honest failure and the app reports it rather than saving a silent
+file. Write what you saw into the measured section above, either way.
 
 ## The model download
 
@@ -187,7 +248,7 @@ Default `~/Documents/minutes`, one directory per meeting:
   notes.md        front matter naming the engine, the model and the endpoint used
   bullets.md      what you typed, word for word, written once and only read after
   transcript.md   timestamped, with the track each line came from
-  audio/          mic.wav, deleted after transcription unless you keep it
+  audio/          mic.wav and system.wav, deleted after transcription unless you keep them
   meta.json       durations, engine, model, what ran where, what happened to the audio
 ```
 

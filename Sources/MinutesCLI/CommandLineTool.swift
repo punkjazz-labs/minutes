@@ -22,9 +22,11 @@ struct CommandLineTool {
           minutes-cli fetch-models [--model v3|v2]
               Download the Parakeet speech model to the local cache. Needs the network once.
 
-          minutes-cli record <seconds> [--out file.wav]
-              Record the microphone for a few seconds and report what arrived.
-              Proves a device is feeding real samples, without the app or a window.
+          minutes-cli record <seconds> [--out file.wav] [--source mic|system]
+              Record for a few seconds and report what arrived. Proves a device is
+              feeding real samples, without the app or a window. The system source is
+              the Core Audio tap, and macOS only grants that to a signed bundle, so a
+              bare binary is expected to report digital zero.
 
           minutes-cli transcribe <audio.wav> [--track me|others] [--model v3|v2]
               Transcribe a WAV on this Mac and print the transcript with measured timings.
@@ -152,22 +154,32 @@ struct CommandLineTool {
 
         case "record":
             let seconds = Double(arguments.positional.first ?? "5") ?? 5
+            let wantsSystemAudio = (arguments.options["source"] ?? "mic") == "system"
+            let defaultName = wantsSystemAudio ? "minutes-record-system.wav" : "minutes-record.wav"
             let output = URL(
                 fileURLWithPath: arguments.options["out"]
-                    ?? FileManager.default.temporaryDirectory.appendingPathComponent("minutes-record.wav").path)
-            let microphone = MicrophoneCapture()
-            if let reason = microphone.unavailableReason { complain(reason) }
+                    ?? FileManager.default.temporaryDirectory.appendingPathComponent(defaultName).path)
+
+            let capture: any AudioCapturing = wantsSystemAudio ? SystemAudioCapture() : MicrophoneCapture()
+            if let reason = capture.unavailableReason { complain(reason) }
+            if wantsSystemAudio { print(SystemAudioCapture.permissionNotice) }
 
             do {
-                try microphone.start(writingTo: output)
+                try capture.start(writingTo: output)
                 print(String(format: "Recording %.0f seconds to %@", seconds, output.path))
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                let result = try microphone.stop()
+                let result = try capture.stop()
                 print(result.summary)
+                for note in result.notes { print(note) }
                 print(String(format: "RMS level %.4f over %d frames.", result.signal.rms, result.signal.frameCount))
+                if let tap = capture as? SystemAudioCapture, tap.rebuildCount > 0 {
+                    print("The tap was rebuilt \(tap.rebuildCount) time(s) while this ran.")
+                }
                 if result.signal.isAllZero {
                     complain(
-                        "Every sample was digital zero. Either nothing is feeding the input, or macOS denied the microphone to this binary. A bare executable is not granted microphone access; build the app with make app.")
+                        wantsSystemAudio
+                            ? "Every sample was digital zero. Either this Mac played nothing, or macOS never granted system audio recording to this binary. A bare executable is not granted it; build the app with make app and record from there."
+                            : "Every sample was digital zero. Either nothing is feeding the input, or macOS denied the microphone to this binary. A bare executable is not granted microphone access; build the app with make app.")
                 }
             } catch {
                 complain(error.localizedDescription)
