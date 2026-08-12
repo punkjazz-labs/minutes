@@ -4,7 +4,11 @@ import PackageDescription
 let package = Package(
     name: "minutes",
     platforms: [
-        .macOS(.v14)
+        // Core Audio process taps arrived in macOS 14.2, and the app bundle
+        // already declares 14.4 as its minimum, so the package says the same
+        // number rather than guarding every tap call with an availability
+        // check for a version the app never runs on.
+        .macOS("14.4")
     ],
     products: [
         .executable(name: "minutes", targets: ["Minutes"]),
