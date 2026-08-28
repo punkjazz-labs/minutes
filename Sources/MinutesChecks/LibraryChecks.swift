@@ -428,6 +428,92 @@ func libraryChecks(_ run: CheckRun) async throws {
         renamedTwice.directory.url.lastPathComponent, "2026-08-05-0900-budget-review-again",
         "renaming twice does not write the date into the name a second time")
 
+    // MARK: - A rename must not cost the meeting its provenance
+
+    run.section("Provenance survives a rename")
+
+    // The minimal meta.json written above is preferred over the front matter by
+    // every later reader, so leaving its fields empty erases the last record of
+    // what transcribed the meeting on the very next re-run.
+    run.equal(
+        try MeetingStore(root: oldRoot).readMeta(in: oldRenamed.directory).transcriptionEngine, "e",
+        "the minimal meta.json carries the engine the front matter named")
+
+    let beforeRerun = try String(contentsOf: oldRenamed.directory.notesURL, encoding: .utf8)
+    run.expect(beforeRerun.contains("transcription_engine: \"e\""), "the fixture really names an engine")
+
+    let rerun = try await oldLibrary.rewriteNotes(
+        for: oldRenamed,
+        using: StubGenerator(body: "## Standup\n\nStill nothing to report.", error: nil),
+        endpoint: "http://127.0.0.1:4000/v1",
+        model: "profile/general")
+
+    let afterRerun = try String(contentsOf: rerun.directory.notesURL, encoding: .utf8)
+    run.expect(
+        afterRerun.contains("transcription_engine: \"e\""),
+        "a rename and then a re-run keeps the engine that transcribed the meeting")
+    run.expect(
+        afterRerun.contains("transcription_model: \"m\""),
+        "a rename and then a re-run keeps the model that transcribed the meeting")
+    run.expect(
+        !afterRerun.contains("transcription_engine: \"\""),
+        "the provenance is never written back as an empty field")
+
+    // The same rule from the other side: an empty field in meta.json is the
+    // absence of an answer, and must not shadow the front matter.
+    let blanked = try Scratch.directory("library-blank-meta")
+    let blankedStore = MeetingStore(root: blanked)
+    let blankedDirectory = try blankedStore.createMeeting(title: "Blank meta", date: oldDay)
+    try blankedStore.writeTranscript(
+        Transcript(
+            segments: [TranscriptSegment(track: .me, start: 2, end: 4, text: "One line is enough.")],
+            engine: "e", model: "m", recordedAt: oldDay, duration: 120),
+        title: "Blank meta",
+        to: blankedDirectory)
+    try blankedStore.writeNotes(
+        title: "Blank meta",
+        date: oldDay,
+        duration: 120,
+        ownerNotes: "",
+        body: "## Blank meta\n\nNothing.",
+        pendingReason: nil,
+        transcriptionEngine: "FluidAudio Parakeet TDT (fake)",
+        transcriptionModel: "parakeet-tdt-0.6b-v3-coreml",
+        notesEndpoint: "http://127.0.0.1:4000/v1",
+        notesModel: "profile/general",
+        to: blankedDirectory)
+    try blankedStore.writeMeta(
+        MeetingMeta(
+            title: "Blank meta",
+            startedAt: oldDay,
+            durationSeconds: 120,
+            transcriptionEngine: "",
+            transcriptionModel: "",
+            notesState: "written",
+            tracksRecorded: ["me"],
+            tracksMissing: [],
+            audioKept: false),
+        to: blankedDirectory)
+
+    guard let blankedMeeting = MeetingSummary.read(blankedDirectory) else {
+        run.failed("a meeting with a blank meta.json should still be a row")
+        return
+    }
+    _ = try await MeetingLibrary(root: blanked).rewriteNotes(
+        for: blankedMeeting,
+        using: StubGenerator(body: "## Blank meta\n\nStill nothing.", error: nil),
+        endpoint: "http://127.0.0.1:4000/v1",
+        model: "profile/general")
+
+    run.expect(
+        try String(contentsOf: blankedDirectory.notesURL, encoding: .utf8)
+            .contains("FluidAudio Parakeet TDT (fake)"),
+        "an empty field in meta.json does not shadow the front matter")
+    run.equal(
+        try blankedStore.readMeta(in: blankedDirectory).transcriptionEngine,
+        "FluidAudio Parakeet TDT (fake)",
+        "a re-run heals the empty field rather than leaving it to be found again")
+
     // MARK: - A notes folder reached through a symlink
 
     run.section("A notes folder that is a symlink")
@@ -467,6 +553,45 @@ func libraryChecks(_ run: CheckRun) async throws {
     run.equal(
         try linked.meetings().count, 1,
         "a rename through a symlinked notes folder does not duplicate the meeting")
+
+    // And the sharper shape: the notes folder's own last path component is the
+    // symlink. The URL form of contentsOfDirectory refuses that outright, so
+    // every meeting was on the disk and none of them was reachable.
+    let targetRoot = try Scratch.directory("library-target")
+    let folderLink = try Scratch.directory("library-folder-link").appendingPathComponent("notes")
+    try FileManager.default.createSymbolicLink(at: folderLink, withDestinationURL: targetRoot)
+
+    try writeFixture(
+        in: targetRoot,
+        title: "Behind a link",
+        date: oldDay,
+        bullets: "",
+        notesBody: "## Behind a link\n\nNothing new.",
+        lines: [TranscriptSegment(track: .me, start: 1, end: 2, text: "Hello.")])
+
+    run.equal(
+        try MeetingStore(root: folderLink).meetings().count, 1,
+        "a notes folder that is itself a symlink still lists its meetings")
+
+    let behindLink = MeetingLibrary(root: folderLink)
+    run.equal(try behindLink.meetings().count, 1, "the library shows the meeting behind the link")
+    run.equal(
+        try behindLink.meetings().first?.title ?? "", "Behind a link",
+        "the meeting behind the link keeps its title")
+    run.equal(try behindLink.search("nothing new").count, 1, "search reaches a folder that is a symlink")
+
+    // The privacy claim follows the files, not the name of the link.
+    let syncTarget = try Scratch.directory("library-sync").appendingPathComponent(
+        "Dropbox", isDirectory: true)
+    try FileManager.default.createDirectory(at: syncTarget, withIntermediateDirectories: true)
+    let plainLink = try Scratch.directory("library-plain").appendingPathComponent("notes")
+    try FileManager.default.createSymbolicLink(at: plainLink, withDestinationURL: syncTarget)
+    run.equal(
+        SyncFolderDetector.service(for: plainLink) ?? "", "Dropbox",
+        "a folder whose name says nothing still names the service its target syncs to")
+    run.equal(
+        SyncFolderDetector.service(for: URL(fileURLWithPath: "/Users/a/Dropbox/minutes")) ?? "", "Dropbox",
+        "a path that names a service is still detected when it resolves to itself")
 
     let outside = try Scratch.directory("outside")
     let stranger = MeetingSummary(

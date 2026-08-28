@@ -156,7 +156,7 @@ public struct MeetingLibrary: Sendable {
             // front matter of notes.md still holds the old one, so without this
             // the owner watches the title change and then change back, and the
             // directory on disk stops matching the title on screen.
-            try? store.writeMeta(minimalMeta(for: meeting, title: trimmed), to: moved)
+            try? store.writeMeta(minimalMeta(for: meeting, in: moved, title: trimmed), to: moved)
         }
 
         return MeetingSummary(
@@ -169,16 +169,29 @@ public struct MeetingLibrary: Sendable {
     }
 
     /// The smallest honest `meta.json` for a meeting that has none: the title
-    /// the owner just gave it, and what the row already knew. Nothing is
-    /// invented about the engine or the endpoint, because this meeting cannot
-    /// say what wrote it.
-    private func minimalMeta(for meeting: MeetingSummary, title: String) -> MeetingMeta {
-        MeetingMeta(
+    /// the owner just gave it, and everything the meeting can still say about
+    /// itself. Nothing is invented.
+    ///
+    /// The provenance is copied out of the front matter of `notes.md`, which is
+    /// where a meeting written before `meta.json` existed keeps it. Writing a
+    /// `meta.json` with empty fields does not merely fail to add anything: it
+    /// shadows that front matter for every reader that prefers `meta.json`, so
+    /// the next re-run writes the engine and the model back as empty strings
+    /// and the provenance is gone.
+    private func minimalMeta(
+        for meeting: MeetingSummary,
+        in directory: MeetingDirectory,
+        title: String
+    ) -> MeetingMeta {
+        let front = NotesDocument.parse(at: directory.notesURL)?.frontMatter ?? [:]
+        return MeetingMeta(
             title: title,
             startedAt: meeting.startedAt,
             durationSeconds: meeting.duration,
-            transcriptionEngine: "",
-            transcriptionModel: "",
+            transcriptionEngine: front["transcription_engine"] ?? "",
+            transcriptionModel: front["transcription_model"] ?? "",
+            notesEndpoint: front["notes_endpoint"],
+            notesModel: front["notes_model"],
             notesState: meeting.notesState == .written ? "written" : "pending",
             tracksRecorded: meeting.tracksRecorded,
             tracksMissing: [],
@@ -211,6 +224,18 @@ public struct MeetingLibrary: Sendable {
             NotesRequest(title: meeting.title, ownerNotes: current.bullets, transcript: current.transcriptText))
 
         let meta = try? store.readMeta(in: meeting.directory)
+
+        // An empty field in `meta.json` is not an answer, it is the absence of
+        // one, so it must not shadow the front matter of `notes.md`. A re-run
+        // rewrites that front matter, so preferring the empty field would erase
+        // the last record of what transcribed this meeting.
+        func provenance(_ recorded: String?, _ frontMatterKey: String) -> String {
+            if let recorded, !recorded.isEmpty { return recorded }
+            return current.notes?.frontMatter[frontMatterKey] ?? ""
+        }
+        let engine = provenance(meta?.transcriptionEngine, "transcription_engine")
+        let engineModel = provenance(meta?.transcriptionModel, "transcription_model")
+
         try store.writeNotes(
             title: meeting.title,
             date: meeting.startedAt,
@@ -218,10 +243,8 @@ public struct MeetingLibrary: Sendable {
             ownerNotes: current.bullets,
             body: result.markdown,
             pendingReason: nil,
-            transcriptionEngine: meta?.transcriptionEngine
-                ?? current.notes?.frontMatter["transcription_engine"] ?? "",
-            transcriptionModel: meta?.transcriptionModel
-                ?? current.notes?.frontMatter["transcription_model"] ?? "",
+            transcriptionEngine: engine,
+            transcriptionModel: engineModel,
             notesEndpoint: endpoint,
             notesModel: model,
             to: meeting.directory)
@@ -230,6 +253,10 @@ public struct MeetingLibrary: Sendable {
             meta.notesState = "written"
             meta.notesEndpoint = endpoint
             meta.notesModel = model
+            // The record heals itself, so the next reader does not have to fall
+            // back at all.
+            meta.transcriptionEngine = engine
+            meta.transcriptionModel = engineModel
             try? store.writeMeta(meta, to: meeting.directory)
         }
 
