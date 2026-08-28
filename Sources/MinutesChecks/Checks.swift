@@ -8,6 +8,7 @@ struct Checks {
         print("minutes \(MinutesBuild.version) checks")
 
         do {
+            packagingChecks(run)
             try audioChecks(run)
             try systemAudioChecks(run)
             transcriptChecks(run)
