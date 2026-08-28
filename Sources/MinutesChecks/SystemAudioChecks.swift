@@ -488,6 +488,11 @@ func systemAudioChecks(_ run: CheckRun) throws {
         run.close(writer.duration, 1.0, 0.08, "a second of 44.1 kHz audio is a second of 16 kHz audio")
         run.expect(writer.signal.peak > 0.1, "the level check sees the converted samples")
         run.expect(writer.writeFailure == nil, "the conversion wrote without an error")
+        // The converter is fed one buffer and then told there is no more. A box
+        // that forgot it had been read would feed the same buffer for ever.
+        run.close(
+            Double(writer.signal.frameCount), 16_000, 1_400,
+            "the converter is fed the buffer once and not again")
         let read = try WAVReader.read(url: url)
         run.equal(read.sampleRate, 16_000, "the file on disk is 16 kHz whatever the device gave")
     }

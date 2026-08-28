@@ -100,16 +100,10 @@ public final class TrackWriter: @unchecked Sendable {
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
         guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
 
-        var consumed = false
+        let input = OneBufferInput(buffer)
         var conversionError: NSError?
         let status = converter.convert(to: output, error: &conversionError) { _, statusPointer in
-            if consumed {
-                statusPointer.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            statusPointer.pointee = .haveData
-            return buffer
+            input.next(statusPointer)
         }
 
         guard status != .error, output.frameLength > 0, let channel = output.floatChannelData?[0] else { return }
@@ -149,6 +143,36 @@ public final class TrackWriter: @unchecked Sendable {
     }
 
     // MARK: - Internals
+
+    /// The one buffer a conversion is fed, and the record of whether it has
+    /// been fed yet.
+    ///
+    /// `AVAudioConverter` types its input block as `@Sendable`, and it calls
+    /// that block from `convert` on the calling thread, before `convert`
+    /// returns. So the buffer never crosses a thread and the flag never races.
+    /// Swift 6 cannot read that guarantee out of the type, and the answer is to
+    /// state the fact in one small box that is safe to hand over, rather than
+    /// to silence every Sendable diagnostic from AVFAudio with a
+    /// `@preconcurrency` import.
+    private final class OneBufferInput: @unchecked Sendable {
+
+        private let buffer: AVAudioPCMBuffer
+        private var consumed = false
+
+        init(_ buffer: AVAudioPCMBuffer) {
+            self.buffer = buffer
+        }
+
+        func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioPCMBuffer? {
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+    }
 
     /// Caller holds the lock.
     private func makeConverterLocked(for format: AVAudioFormat) throws {
