@@ -8,19 +8,10 @@ import SwiftUI
 @MainActor
 final class RecordingController: ObservableObject {
 
-    enum Phase: Equatable {
-        case idle
-        case recording
-        case working(String)
-        case finished
-
-        var isBusy: Bool {
-            if case .working = self { return true }
-            return false
-        }
-    }
-
-    @Published private(set) var phase: Phase = .idle
+    /// The phase, and the only changes to it that are allowed, live in
+    /// `MinutesCore`, so the rule that a second Record press can never start a
+    /// second recording is a rule the checks can drive.
+    @Published private(set) var state = RecordingState()
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0
     @Published private(set) var capturedSilence = false
@@ -66,7 +57,8 @@ final class RecordingController: ObservableObject {
 
     // MARK: - Facts shown on screen
 
-    var isRecording: Bool { phase == .recording }
+    var phase: RecordingPhase { state.phase }
+    var isRecording: Bool { state.isRecording }
 
     /// What to say about the other side of the meeting. Before recording this
     /// is how the permission works, because macOS never reports it. While
@@ -107,6 +99,8 @@ final class RecordingController: ObservableObject {
         switch phase {
         case .idle:
             return modelReady ? "Ready." : "Ready, but the speech model is not downloaded yet."
+        case .starting:
+            return "Opening the microphone and the system audio tap."
         case .recording:
             return capturedSilence
                 ? "Recording, but every sample so far is digital zero. Nothing is being heard."
@@ -207,7 +201,14 @@ final class RecordingController: ObservableObject {
     }
 
     func start() {
-        guard phase == .idle || phase == .finished else { return }
+        // The slot is taken here, synchronously, in the same run of main actor
+        // code that decided to take it. Opening a device is asynchronous, so a
+        // phase written after the devices are open would leave a gap in which a
+        // second Record press reads the same idle phase and starts a second
+        // recording against the same two sources. `claimStart` cannot be
+        // separated that way: it does not open anything and there is nothing
+        // inside it to await.
+        guard state.claimStart() else { return }
         log = []
         capturedSilence = false
         systemAudioSilence = false
@@ -229,12 +230,12 @@ final class RecordingController: ObservableObject {
                 try microphone.start(writingTo: url)
                 recordingURL = url
                 startedAt = Date()
-                phase = .recording
+                state.startSucceeded()
                 append("Recording started.")
                 startTicker()
             } catch {
                 append("Recording did not start: \(error.localizedDescription)")
-                phase = .idle
+                state.startFailed()
                 return
             }
 
@@ -254,7 +255,9 @@ final class RecordingController: ObservableObject {
     }
 
     func stopAndWriteUp() {
-        guard isRecording else { return }
+        // The stop is claimed the same way the start is, so a second Stop press
+        // cannot run the pipeline twice over one pair of recordings.
+        guard state.claimStop() else { return }
         stopTicker()
 
         // Both sources are stopped before anything here can return. A tap left
@@ -270,7 +273,7 @@ final class RecordingController: ObservableObject {
         // Without the owner's own track there is no meeting to write up. The
         // tap is already stopped by the line above, whatever happened here.
         guard stopped.ownCapture != nil else {
-            phase = .idle
+            state.abandon()
             return
         }
 
@@ -284,7 +287,7 @@ final class RecordingController: ObservableObject {
         let ownerNotes = draft.bullets
         let currentSettings = settings
 
-        phase = .working("Transcribing on this Mac.")
+        state.working("Transcribing on this Mac.")
 
         let pipeline = MeetingPipeline(
             settings: currentSettings,
@@ -313,10 +316,10 @@ final class RecordingController: ObservableObject {
                 // failed keeps them, because then the folder does not have
                 // them and the app is the only place they exist.
                 draft.clearAfterWriteUp()
-                phase = .finished
+                state.finish()
             } catch {
                 append("The meeting could not be written up: \(error.localizedDescription)")
-                phase = .finished
+                state.finish()
             }
         }
     }

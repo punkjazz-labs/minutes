@@ -335,6 +335,69 @@ func pipelineChecks(_ run: CheckRun) async throws {
         run.expect(transcript.contains("No audio was recorded on the Others track."), "the missing track is named")
     }
 
+    // Two Record presses inside the gap where the devices are being opened.
+    // Opening a device is asynchronous, so that gap is real, and a second press
+    // that gets through it starts a second recording against the same two
+    // sources.
+    run.section("Starting and stopping a meeting")
+
+    do {
+        var state = RecordingState()
+        run.equal(state.phase, .idle, "an app that has not recorded is idle")
+
+        let firstPress = state.claimStart()
+        let secondPress = state.claimStart()
+
+        run.expect(firstPress, "the first Record press takes the recording slot")
+        run.expect(!secondPress, "a second Record press inside the same gap is refused")
+        run.equal(state.phase, .starting, "the slot is taken before any device is opened")
+
+        // The first press finishes opening the devices. If the second press had
+        // been let through, its own start would have found the sources already
+        // recording and would have reported that as its own failure.
+        state.startSucceeded()
+        if secondPress { state.startFailed() }
+
+        run.expect(state.isRecording, "a refused second press leaves the meeting recording")
+        run.equal(state.phase, .recording, "the record dot stays on while the sources are running")
+        run.expect(
+            state.claimStop(),
+            "stop stays reachable, so a tap can never outlive the record dot")
+        run.equal(
+            state.phase, .working(RecordingState.stopping), "stopping is a phase the screen can name")
+    }
+
+    do {
+        // A start that really failed. No device is open, so idle is the truth.
+        var failed = RecordingState()
+        run.expect(failed.claimStart(), "the slot is free before the first press")
+        failed.startFailed()
+        run.equal(failed.phase, .idle, "a start that opened no device goes back to idle")
+        run.expect(failed.claimStart(), "the slot is free again after a start that failed")
+
+        // Every other phase refuses a start, so no phase can hold two meetings.
+        for phase in [RecordingPhase.starting, .recording, .working("anything")] {
+            var busy = RecordingState(phase: phase)
+            run.expect(!busy.claimStart(), "a start is refused while the app is busy")
+            run.equal(busy.phase, phase, "a refused start changes nothing at all")
+        }
+
+        // And a stop is claimed once, so one pair of recordings cannot be
+        // written up twice.
+        var running = RecordingState()
+        _ = running.claimStart()
+        running.startSucceeded()
+        run.expect(running.claimStop(), "the first Stop press takes the stop")
+        run.expect(!running.claimStop(), "a second Stop press is refused")
+
+        var finished = RecordingState()
+        _ = finished.claimStart()
+        finished.startSucceeded()
+        _ = finished.claimStop()
+        finished.finish()
+        run.expect(finished.claimStart(), "a finished meeting frees the slot for the next one")
+    }
+
     // What the owner typed belongs to the meeting it was typed for.
     do {
         var draft = MeetingDraft(title: "Pricing call", bullets: "- Bob agreed to 15 percent")
