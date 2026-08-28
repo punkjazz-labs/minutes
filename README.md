@@ -12,7 +12,9 @@ stubs, and which have been measured on real hardware rather than assumed.
 
 - **A menu bar app.** SwiftUI `MenuBarExtra`, no dock icon. The menu bar item
   turns into a record dot while recording, because a Core Audio tap shows no
-  indicator of its own and the app owns that honesty.
+  indicator of its own and the app owns that honesty. Stop stops both tracks
+  together, with no branch between the two stops, so a track that will not
+  close cannot leave the other one recording after the dot has gone.
 - **Microphone capture.** Real. It opens the default input device, converts
   whatever format the device gives to 16 kHz mono, and writes a WAV while the
   meeting runs. Verified on this Mac by recording three seconds and reading the
@@ -42,12 +44,19 @@ stubs, and which have been measured on real hardware rather than assumed.
   `system.wav` is discarded rather than saved next to a real `mic.wav`, the
   transcript says the track was recorded and carried nothing, and `meta.json`
   names it under `tracksSilent`. The warning that only one side was recorded
-  disappears only when the second track actually carried signal.
+  disappears only when the second track actually carried signal. A track that
+  delivered nothing at all counts as carrying nothing, the same as a track that
+  delivered digital silence, because the two heard the same amount.
 - **A signal check that runs while recording.** Peak, RMS and runs of exact
   zeros. A capture that delivers digital silence is reported as such, on
   screen, in the activity log and in the transcript, and is never sent to the
   speech engine. Digital silence and a quiet room are indistinguishable once
   they are on disk, so the app measures instead of assuming.
+- **A recording is a readable file while it is still being made.** The WAV
+  header is rewritten after every buffer, so a force quit, a crash or a power
+  cut during a meeting costs the samples that were never written and nothing
+  else. The reader takes the rest of the file when a header says zero, so a
+  recording interrupted by an older build opens as well.
 - **Local transcription with Parakeet.** FluidAudio, Core ML on the Apple
   Neural Engine, `parakeet-tdt-0.6b-v3-coreml`. Offline once the model is
   downloaded. Token timings become timestamped lines.
@@ -63,16 +72,23 @@ stubs, and which have been measured on real hardware rather than assumed.
 - **A meeting library.** Meetings in the menu bar popover opens a window
   listing every meeting in the notes folder
   with its date, length and notes state, read from the files rather than from
-  an index. Rename edits the row and renames the directory. Files reveals it in
+  an index. A meeting whose transcription failed says so on its row. Rename
+  edits the row and renames the directory, and it holds on a meeting written by
+  an older version that has no `meta.json`. Files reveals it in
   Finder. Delete asks first and then removes the whole directory, audio
   included. The header names the notes folder and the service it syncs to.
 - **Search across meetings.** Titles, notes and transcripts, with the words
   around the match shown under the title of each meeting that matched.
 - **Traceable notes.** The timestamps the model already writes become chips.
-  Clicking one scrolls the transcript to that line and marks it. A line whose
-  timestamp is not in the transcript is not given a link that lands on the
-  wrong words: it is moved to a box that says it is not in the transcript,
-  along with anything the model itself filed as unanchored.
+  Clicking one scrolls the transcript to that line and marks it. A chip is
+  never given a link that lands on the wrong words, and that is one rule and
+  not two. A timestamp the transcript does not hold points nowhere. A timestamp
+  the transcript holds twice, which is what two people talking in the same
+  second produce, points at the line whose words the note quotes, and at
+  nothing at all when the words cannot say which line was meant. Either way the
+  line moves to a box that says it is not in the transcript, along with
+  anything the model itself filed as unanchored. Answers from the question box
+  follow the same rule.
 - **Write notes again.** Notes generation runs again for a meeting already on
   disk, from the same two inputs. `bullets.md` is read and never written, and
   `notes.md` is replaced only once the endpoint has answered, so a failed
@@ -100,7 +116,7 @@ stubs, and which have been measured on real hardware rather than assumed.
   No second Mac has installed it, and the two permission prompts still need a
   person to answer them. The measured section below says what was verified, and
   by which command.
-- **Checks**, `minutes-checks`, 261 assertions covering the hardware seams
+- **Checks**, `minutes-checks`, 336 assertions covering the hardware seams
   with fakes behind all of them. The tap is behind a `SystemAudioSource`
   protocol, so rebuild counting, the two-track write-up and the silence
   reporting run without a permission grant or a sound card; anchor parsing,
@@ -119,10 +135,12 @@ stubs, and which have been measured on real hardware rather than assumed.
 - **The notes are not streamed.** One request, one answer, for the notes and
   for a question alike. Streaming is a change behind the `NotesGenerating` and
   `Asking` protocols.
-- **An anchor is an exact timestamp match and nothing cleverer.** A chip
+- **An anchor is an exact timestamp match and a count of shared words.** A chip
   appears when the transcript has a line at exactly the timecode the model
-  wrote. A model that is a second out produces a line in the box that says it
-  is not in the transcript, rather than a link to the wrong words.
+  wrote. When two lines share that second, the words each one has in common
+  with the note decide which of the two, and a draw decides nothing. There is
+  no other cleverness: a model that is a second out produces a line in the box
+  that says it is not in the transcript, rather than a link to the wrong words.
 - **Long meetings are sent whole.** No chunking with overlap and no summary of
   summaries yet, so a meeting long enough to exceed the endpoint's context
   window fails as a server error rather than being split.
@@ -325,9 +343,10 @@ Default `~/Documents/minutes`, one directory per meeting:
   meta.json       durations, engine, model, what ran where, what happened to the audio
 ```
 
-Renaming a meeting renames the directory and the title in `meta.json`. It does
-not rewrite `notes.md` or `transcript.md`, because a rename must never be able
-to lose what was said.
+Renaming a meeting renames the directory and the title in `meta.json`, and
+writes the smallest honest `meta.json` when the meeting has none, so the new
+title survives a reload. It does not rewrite `notes.md` or `transcript.md`,
+because a rename must never be able to lose what was said.
 
 ## The endpoint
 
@@ -344,6 +363,12 @@ local gateway accepts anything there.
 If the endpoint does not answer, the transcript is still written and `notes.md`
 records `notes_state: pending` with the reason. A machine being off costs the
 notes, never the meeting.
+
+The speech engine is held to the same rule. A track it refuses is still written
+up: the meeting appears in the library saying that transcription failed, the
+transcript and `meta.json` name the reason the engine gave, and the audio of
+that track is kept whatever the delete setting says, because that recording is
+the only record of it that exists.
 
 ## What this app does not tell you
 
