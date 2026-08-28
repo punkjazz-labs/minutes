@@ -270,8 +270,15 @@ public struct MeetingStore: Sendable {
     }
 
     public func meetings() throws -> [MeetingDirectory] {
-        guard fileManager.fileExists(atPath: root.path) else { return [] }
-        let entries = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
+        // The URL form of `contentsOfDirectory` refuses a symlink to a
+        // directory outright, with POSIX 20, "Not a directory". A notes folder
+        // that is itself a link would then show no meetings at all, and an
+        // error nobody can act on, while every meeting sits on the disk.
+        // Resolving first costs nothing: it is the same folder, so they are the
+        // same meetings.
+        let folder = root.resolvingSymlinksInPath()
+        guard fileManager.fileExists(atPath: folder.path) else { return [] }
+        let entries = try fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey])
         return
             entries
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }

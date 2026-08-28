@@ -6,8 +6,16 @@ import Foundation
 /// a claim that stopped being true when the owner picked the folder.
 public enum SyncFolderDetector {
 
+    /// Where the files really land decides this, so a notes folder reached
+    /// through a symlink names the service its target syncs to. The path as the
+    /// owner wrote it is read as well, and second, so a folder that was named
+    /// before is never named less.
     public static func service(for url: URL) -> String? {
-        let path = url.standardizedFileURL.path
+        service(atPath: url.resolvingSymlinksInPath().standardizedFileURL.path)
+            ?? service(atPath: url.standardizedFileURL.path)
+    }
+
+    private static func service(atPath path: String) -> String? {
         let components = path.split(separator: "/").map(String.init)
 
         // iCloud Drive on disk.
