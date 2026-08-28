@@ -108,12 +108,18 @@ public struct MeetingSummary: Sendable, Equatable, Identifiable {
     }
 
     /// `yyyy-MM-dd-HHmm-slug` read back, for a meeting with no other record.
+    ///
+    /// The title is the slug and not the whole directory name. Returning the
+    /// whole name puts the date on screen as part of the title, and the rename
+    /// field is filled from what is on screen, so the next rename writes the
+    /// date into the directory name a second time.
     static func nameParts(_ name: String) -> (date: Date?, title: String) {
         let parts = name.split(separator: "-", maxSplits: 4, omittingEmptySubsequences: false)
         guard parts.count >= 4, let date = formatter("yyyy-MM-dd-HHmm").date(from: parts[0...3].joined(separator: "-"))
         else {
             return (nil, name)
         }
-        return (date, name)
+        guard parts.count >= 5 else { return (date, name) }
+        return (date, parts[4...].joined(separator: "-"))
     }
 }

@@ -351,6 +351,123 @@ func libraryChecks(_ run: CheckRun) async throws {
     run.expect(!FileManager.default.fileExists(atPath: bare.directory.url.path), "delete removes the whole meeting")
     run.equal(try library.meetings().count, 2, "the deleted meeting leaves the library")
 
+    // MARK: - A meeting with no meta.json
+
+    run.section("A meeting written by an older version")
+
+    let oldRoot = try Scratch.directory("library-no-meta")
+    let oldLibrary = MeetingLibrary(root: oldRoot)
+    let oldStore = MeetingStore(root: oldRoot)
+    let oldDay = calendar.date(from: DateComponents(year: 2_026, month: 8, day: 5, hour: 9))!
+
+    let oldDirectory = try oldStore.createMeeting(title: "Standup", date: oldDay)
+    try oldStore.writeTranscript(
+        Transcript(
+            segments: [TranscriptSegment(track: .me, start: 3, end: 6, text: "Nothing to report today.")],
+            engine: "e", model: "m", recordedAt: oldDay, duration: 300),
+        title: "Standup",
+        to: oldDirectory)
+    try oldStore.writeNotes(
+        title: "Standup",
+        date: oldDay,
+        duration: 300,
+        ownerNotes: "",
+        body: "## Standup\n\nNothing to report.",
+        pendingReason: nil,
+        transcriptionEngine: "e",
+        transcriptionModel: "m",
+        notesEndpoint: "http://127.0.0.1:4000/v1",
+        notesModel: "profile/general",
+        to: oldDirectory)
+    // No meta.json, which is how v0.1 wrote a meeting and how a pipeline that
+    // stopped after the notes leaves one.
+
+    guard let oldMeeting = MeetingSummary.read(oldDirectory) else {
+        run.failed("a meeting with no meta.json should still be a row")
+        return
+    }
+    run.expect(
+        !FileManager.default.fileExists(atPath: oldDirectory.metaURL.path),
+        "the fixture really has no meta.json")
+
+    let oldRenamed = try oldLibrary.rename(oldMeeting, to: "Quarterly planning")
+    run.equal(
+        oldRenamed.directory.url.lastPathComponent, "2026-08-05-0900-quarterly-planning",
+        "a meeting with no meta.json is still renamed on disk")
+
+    guard let reloadedOld = MeetingSummary.read(oldRenamed.directory) else {
+        run.failed("the renamed meeting should still be a row")
+        return
+    }
+    run.equal(
+        reloadedOld.title, "Quarterly planning",
+        "the new title survives a reload, so it does not change back on screen")
+    run.equal(
+        try MeetingStore(root: oldRoot).readMeta(in: oldRenamed.directory).title, "Quarterly planning",
+        "a minimal meta.json is written for a meeting that had none")
+
+    // The fallback title, for a meeting with nothing but a transcript.
+    let bareDirectory = try oldStore.createMeeting(title: "Pricing call", date: oldDay)
+    try oldStore.writeTranscript(
+        Transcript(
+            segments: [TranscriptSegment(track: .me, start: 1, end: 2, text: "Hello.")],
+            engine: "e", model: "m", recordedAt: oldDay, duration: 60),
+        title: "Pricing call",
+        to: bareDirectory)
+
+    guard let fallback = MeetingSummary.read(bareDirectory) else {
+        run.failed("a meeting with only a transcript should still be a row")
+        return
+    }
+    run.equal(fallback.title, "pricing-call", "the fallback title is the slug and not the whole directory name")
+    run.expect(!fallback.title.contains("2026-08-05"), "the fallback title does not carry the date")
+
+    let renamedTwice = try oldLibrary.rename(
+        try oldLibrary.rename(fallback, to: "Budget review"), to: "Budget review again")
+    run.equal(
+        renamedTwice.directory.url.lastPathComponent, "2026-08-05-0900-budget-review-again",
+        "renaming twice does not write the date into the name a second time")
+
+    // MARK: - A notes folder reached through a symlink
+
+    run.section("A notes folder that is a symlink")
+
+    // The shape a real Mac has: ~/Dropbox is a symlink and the notes folder is
+    // inside it. Listing the folder gives fully resolved paths, and every URL
+    // the app builds keeps the symlink, so the two never compare equal.
+    let realRoot = try Scratch.directory("library-real")
+    let linkParent = try Scratch.directory("library-link").appendingPathComponent("cloud")
+    try FileManager.default.createSymbolicLink(at: linkParent, withDestinationURL: realRoot)
+    let linkRoot = linkParent.appendingPathComponent("notes", isDirectory: true)
+    try FileManager.default.createDirectory(at: linkRoot, withIntermediateDirectories: true)
+
+    let linked = MeetingLibrary(root: linkRoot)
+    try writeFixture(
+        in: linkRoot,
+        title: "Pricing call",
+        date: oldDay,
+        bullets: "",
+        notesBody: "## Pricing\n\nNothing new.",
+        lines: [TranscriptSegment(track: .me, start: 1, end: 2, text: "Hello.")])
+
+    guard let throughLink = try linked.meetings().first else {
+        run.failed("a meeting in a symlinked notes folder should be a row")
+        return
+    }
+    run.expect(
+        throughLink.directory.url != linkRoot.appendingPathComponent(
+            throughLink.directory.url.lastPathComponent, isDirectory: true),
+        "the listed URL and the built URL really do differ under a symlink")
+    // A different title that slugs to the same directory name. The rename has
+    // nothing to move, and must not invent a second directory.
+    let sameSlug = try linked.rename(throughLink, to: "Pricing call!")
+    run.equal(
+        sameSlug.directory.url.lastPathComponent, "2026-08-05-0900-pricing-call",
+        "a rename through a symlinked notes folder does not make a spare -2 directory")
+    run.equal(
+        try linked.meetings().count, 1,
+        "a rename through a symlinked notes folder does not duplicate the meeting")
+
     let outside = try Scratch.directory("outside")
     let stranger = MeetingSummary(
         directory: MeetingDirectory(url: outside),

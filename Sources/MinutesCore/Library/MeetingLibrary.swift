@@ -123,17 +123,26 @@ public struct MeetingLibrary: Sendable {
         guard !trimmed.isEmpty else { return meeting }
         try guardInsideRoot(meeting.directory.url)
 
+        // The same directory reached two ways is one directory. A notes folder
+        // picked through a symlink gives a listed URL and a built URL that
+        // never compare equal, and a rename to a name that slugs the same then
+        // moves the meeting to a spare -2 directory.
+        let current = meeting.directory.url.resolvingSymlinksInPath().standardizedFileURL
+        func isTheSameDirectory(_ url: URL) -> Bool {
+            url.resolvingSymlinksInPath().standardizedFileURL == current
+        }
+
         let wanted = MeetingSlug.directoryName(title: trimmed, date: meeting.startedAt)
         var name = wanted
         var candidate = root.appendingPathComponent(name, isDirectory: true)
         var suffix = 2
-        while fileManager.fileExists(atPath: candidate.path), candidate != meeting.directory.url {
+        while fileManager.fileExists(atPath: candidate.path), !isTheSameDirectory(candidate) {
             name = "\(wanted)-\(suffix)"
             candidate = root.appendingPathComponent(name, isDirectory: true)
             suffix += 1
         }
 
-        if candidate != meeting.directory.url {
+        if !isTheSameDirectory(candidate) {
             try fileManager.moveItem(at: meeting.directory.url, to: candidate)
         }
 
@@ -141,6 +150,13 @@ public struct MeetingLibrary: Sendable {
         if var meta = try? store.readMeta(in: moved) {
             meta.title = trimmed
             try? store.writeMeta(meta, to: moved)
+        } else {
+            // A meeting written by an older version, or one whose pipeline
+            // stopped before meta.json, has no file that records a title. The
+            // front matter of notes.md still holds the old one, so without this
+            // the owner watches the title change and then change back, and the
+            // directory on disk stops matching the title on screen.
+            try? store.writeMeta(minimalMeta(for: meeting, title: trimmed), to: moved)
         }
 
         return MeetingSummary(
@@ -150,6 +166,23 @@ public struct MeetingLibrary: Sendable {
             duration: meeting.duration,
             notesState: meeting.notesState,
             tracksRecorded: meeting.tracksRecorded)
+    }
+
+    /// The smallest honest `meta.json` for a meeting that has none: the title
+    /// the owner just gave it, and what the row already knew. Nothing is
+    /// invented about the engine or the endpoint, because this meeting cannot
+    /// say what wrote it.
+    private func minimalMeta(for meeting: MeetingSummary, title: String) -> MeetingMeta {
+        MeetingMeta(
+            title: title,
+            startedAt: meeting.startedAt,
+            durationSeconds: meeting.duration,
+            transcriptionEngine: "",
+            transcriptionModel: "",
+            notesState: meeting.notesState == .written ? "written" : "pending",
+            tracksRecorded: meeting.tracksRecorded,
+            tracksMissing: [],
+            audioKept: false)
     }
 
     /// The whole directory, audio included.
