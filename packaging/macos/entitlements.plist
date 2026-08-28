@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Entitlements for the Developer ID build. The hardened runtime is on, so
+	this file says what the app is allowed to do. It grants one thing.
+
+	There is no App Sandbox entitlement here on purpose. The app writes
+	meetings to a folder the owner picks, and it reads the speech model from
+	Application Support. A sandbox would need a file access entitlement for
+	each of those, and the Core Audio tap is unreliable inside a sandbox.
+
+	scripts/build-app.sh holds the full reasoning for this list.
+-->
+<plist version="1.0">
+<dict>
+	<!-- The hardened runtime refuses microphone access to a process that
+	     does not carry this key, and it refuses it before the user is ever
+	     asked. Apple documents the key as covering the built-in microphone
+	     and audio input through Core Audio. The app records the microphone,
+	     so it needs this one. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

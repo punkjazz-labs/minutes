@@ -1,4 +1,10 @@
-.PHONY: build release checks app run fetch-models probe settings clean
+.PHONY: build release checks app run dmg fetch-models probe settings clean
+
+# The identity and the notary profile this project ships with. Both are names.
+# The secrets behind the names stay in the keychain and appear in no file here.
+# Set either one in the environment to build with another account.
+SIGN_IDENTITY ?= Developer ID Application: Simone Pomposi (E46XB3XSV9)
+NOTARY_PROFILE ?= basement
 
 # Everything here works with the Command Line Tools alone. Xcode is not needed
 # and xcodebuild is not used.
@@ -19,6 +25,11 @@ app:
 
 run: app
 	open build/Minutes.app
+
+# The disk image another Mac can install. Signed, notarised and stapled.
+# Needs the network and takes a few minutes, because Apple has to answer twice.
+dmg:
+	SIGN_IDENTITY="$(SIGN_IDENTITY)" NOTARY_PROFILE="$(NOTARY_PROFILE)" ./scripts/package-release.sh
 
 # Downloads the Parakeet speech model once. Needs the network.
 fetch-models:
