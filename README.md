@@ -4,9 +4,9 @@ A local meeting notes app for macOS. The recording and the transcript are made
 on your Mac. The transcript is sent to a model endpoint you choose to write the
 notes. Nothing is sent to any other service.
 
-This is v0.3. It records both sides of the meeting, it installs on another Mac
-from a signed disk image, and this file says plainly which parts work, which
-are stubs, and which have been measured on real hardware rather than assumed.
+This is v0.3. It records both sides of the meeting, it ships as a signed and
+notarised disk image, and this file says plainly which parts work, which are
+stubs, and which have been measured on real hardware rather than assumed.
 
 ## What works in v0.3
 
@@ -88,20 +88,27 @@ are stubs, and which have been measured on real hardware rather than assumed.
 - **A command line face**, `minutes-cli`, so the model download, a
   transcription, the endpoint probe and the whole meeting path can be run
   without a window or a permission prompt.
-- **A disk image that installs on another Mac.** `make dmg` produces
+- **A disk image assessed the way a download is assessed.** `make dmg` produces
   `build/Minutes.dmg`. The app is signed with a Developer ID identity under the
   hardened runtime, and Apple has notarised it. The image holds the app and a
   link to /Applications, and the image is signed and notarised too. Both the
-  app and the image carry the ticket on disk, so a Mac with no network opens
-  them. The entitlements file grants one thing, audio input, because the
-  microphone needs it under the hardened runtime and the system audio tap needs
-  no key at all. What Gatekeeper answered is in the measured section below.
-- **Checks**, `minutes-checks`, 260 assertions covering the hardware seams
+  app and the image carry the ticket on disk, which is what lets a Mac with no
+  network open them. A copy of the image was marked with the quarantine flag a
+  browser adds, and Gatekeeper accepted it, and accepted the app inside it. The
+  entitlements file grants one thing, audio input, because the microphone needs
+  it under the hardened runtime and the system audio tap needs no key at all.
+  No second Mac has installed it, and the two permission prompts still need a
+  person to answer them. The measured section below says what was verified, and
+  by which command.
+- **Checks**, `minutes-checks`, 261 assertions covering the hardware seams
   with fakes behind all of them. The tap is behind a `SystemAudioSource`
   protocol, so rebuild counting, the two-track write-up and the silence
   reporting run without a permission grant or a sound card; anchor parsing,
   search, rename, re-run and the question box run against a stub endpoint.
-  None of them needs a microphone, a permission or the network.
+  One of them reads `packaging/macos/Info.plist` and fails when the version in
+  the bundle and the version in the source stop agreeing, because those two
+  numbers are moved by hand. None of them needs a microphone, a permission or
+  the network.
 
 ## What is stubbed or missing in v0.3
 
