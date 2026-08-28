@@ -4,11 +4,11 @@ A local meeting notes app for macOS. The recording and the transcript are made
 on your Mac. The transcript is sent to a model endpoint you choose to write the
 notes. Nothing is sent to any other service.
 
-This is v0.2. It records both sides of the meeting, and this file says plainly
-which parts work, which are stubs, and which have been measured on real
-hardware rather than assumed.
+This is v0.3. It records both sides of the meeting, it installs on another Mac
+from a signed disk image, and this file says plainly which parts work, which
+are stubs, and which have been measured on real hardware rather than assumed.
 
-## What works in v0.2
+## What works in v0.3
 
 - **A menu bar app.** SwiftUI `MenuBarExtra`, no dock icon. The menu bar item
   turns into a record dot while recording, because a Core Audio tap shows no
@@ -88,6 +88,14 @@ hardware rather than assumed.
 - **A command line face**, `minutes-cli`, so the model download, a
   transcription, the endpoint probe and the whole meeting path can be run
   without a window or a permission prompt.
+- **A disk image that installs on another Mac.** `make dmg` produces
+  `build/Minutes.dmg`. The app is signed with a Developer ID identity under the
+  hardened runtime, and Apple has notarised it. The image holds the app and a
+  link to /Applications, and the image is signed and notarised too. Both the
+  app and the image carry the ticket on disk, so a Mac with no network opens
+  them. The entitlements file grants one thing, audio input, because the
+  microphone needs it under the hardened runtime and the system audio tap needs
+  no key at all. What Gatekeeper answered is in the measured section below.
 - **Checks**, `minutes-checks`, 260 assertions covering the hardware seams
   with fakes behind all of them. The tap is behind a `SystemAudioSource`
   protocol, so rebuild counting, the two-track write-up and the silence
@@ -95,7 +103,7 @@ hardware rather than assumed.
   search, rename, re-run and the question box run against a stub endpoint.
   None of them needs a microphone, a permission or the network.
 
-## What is stubbed or missing in v0.2
+## What is stubbed or missing in v0.3
 
 - **No speaker diarization.** Speaker labels come from which device the audio
   arrived on, not from voice recognition, and the transcript says so. Everyone
@@ -118,9 +126,11 @@ hardware rather than assumed.
   runs and are gone when it quits. Nothing about them is written to the
   meeting folder.
 - **No calendar integration and no automatic meeting detection.**
-- **The build is signed ad-hoc, not notarised.** It is fit for the machine that
-  built it and not for handing to anyone. A Developer ID identity and
-  notarisation are not wired up.
+- **Apple Silicon only.** The binary is `arm64` and the build is not universal,
+  so the disk image does not open on an Intel Mac. `make dmg` builds for the
+  kind of Mac it runs on.
+- **No automatic updates.** The app does not look for a newer version and
+  carries no updater. A new version is a new download.
 - **No Windows and no Linux.** macOS only.
 
 ## What was measured, and what was not
@@ -148,6 +158,24 @@ numbers and not estimates:
   digital zeros, because macOS grants the permission to a signed bundle only
   and never says so. The app reported that run as a refusal, which is the
   honest-silence path working.
+- **The disk image is accepted the way a download is accepted.** On 2026-08-28
+  the whole release path ran on this Mac. Apple accepted both submissions: the
+  app as `8aac89a5-f385-4f84-84fa-296d4a9d4eaf`, the image as
+  `d91434ca-96f4-4efc-ae6f-d0651f25f6ac`. A copy of the image was then marked
+  with the quarantine flag a browser adds, and asked the question a download
+  asks. `spctl --assess --type open --context context:primary-signature`
+  answered `accepted, source=Notarized Developer ID`. The image was mounted and
+  the app inside it answered the same to `spctl --assess --type exec`.
+  `codesign --verify --strict --deep` passed on the app and on the image, and
+  `stapler validate` passed on both, which means each ticket is on the disk and
+  is not fetched from Apple at open time. The image is 3,062,367 bytes. Its
+  sha256 is
+  `5bc88567c390bf222ed2ffc7b83545014a0d59510c19a2b63736259bdac75068`.
+- **The hardened runtime costs the speech engine nothing.** The command line
+  face was signed with the same identity, the same hardened runtime and the
+  same single entitlement, and it then transcribed a real file with the model
+  on the Neural Engine, 6.25 seconds of audio in 0.34 seconds. So Core ML needs
+  no entitlement of its own here and the list stays at one key.
 
 Not measured, and not claimed:
 
@@ -158,6 +186,15 @@ Not measured, and not claimed:
   meeting. The product spec asks for this and it needs real meeting audio.
 - Realtime factor and peak memory on an hour of audio.
 - Anything at all about a fallback engine. Only FluidAudio was run.
+- Whether the microphone and the system audio tap work under the Developer ID
+  identity. No capture code changed. But macOS records both permissions against
+  the signing identity, and the identity changed, so both are new permissions
+  as far as macOS is concerned. It asks for them in a prompt a person clicks,
+  and no automated check can click it. The v0.2 run that proved system audio
+  was made under the ad-hoc signature.
+- Whether the image installs on a second Mac. It was built and assessed on the
+  machine that built it. Gatekeeper was asked the question a download asks, and
+  it accepted, but no other Mac has opened the image.
 
 ## Build and run
 
@@ -169,11 +206,33 @@ make checks         # run the verification suite, exits non-zero on failure
 make fetch-models   # download the Parakeet model, a few hundred megabytes, once
 make app            # assemble and ad-hoc sign build/Minutes.app
 make run            # assemble and open the app
+make dmg            # the signed, notarised disk image, needs the network
 ```
 
 The app must be run from the bundle. macOS grants microphone access on the
 signing identity of a bundle, and a bare executable in `.build/debug` never
 even raises the prompt.
+
+### The disk image
+
+`make dmg` writes `build/Minutes.dmg`. It runs the checks first, builds and
+signs the app, notarises it, staples the answer to it, puts it in the image
+beside a link to /Applications, signs the image, notarises the image, staples
+that too, and then proves the result with `codesign`, `spctl` and `stapler`.
+Apple has to answer twice, so it takes a few minutes and it needs the network.
+
+It also needs a Developer ID identity and a notarytool keychain profile. The
+Makefile names the two this project uses, and the environment replaces either:
+
+```
+SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=other make dmg
+```
+
+No secret is in this repository. Both are names, and macOS holds what sits
+behind each name. `scripts/build-app.sh` still makes the ad-hoc bundle when
+`SIGN_IDENTITY` is not set, so `make app` behaves as it always did.
+
+To install, open the image and drag minutes to Applications.
 
 ### The command line tool
 
@@ -205,16 +264,23 @@ Environment overrides, for a one-off run against another endpoint or folder:
 - **Screen recording.** Not needed and not requested. The app does not use
   ScreenCaptureKit.
 
-Because the bundle is signed ad-hoc, its TCC identity changes if it is rebuilt
-with a different identity, and macOS will ask again.
+macOS records both permissions against the signing identity and not against the
+file. The v0.2 builds were signed ad-hoc, and the v0.3 disk image is signed
+with a Developer ID identity, so macOS treats the installed app as an app it
+has never seen and asks for both permissions again. This is the one step no
+command can do, on this Mac or on any other. Answer the two prompts once, and
+the answer holds for every later build that carries the same identity.
 
 ### Proving system audio works, by hand
 
 This is the part no automated check and no bare binary can do, because macOS
 grants the permission to a signed bundle and only in answer to a prompt a
-person clicks. Ten minutes, once:
+person clicks. It has to be done once for each signing identity, so the
+Developer ID build needs a run of its own. Ten minutes, once:
 
-1. `make app`, then `open build/Minutes.app`.
+1. Open `build/Minutes.dmg`, drag minutes to Applications, and open it from
+   there. For the ad-hoc build instead, run `make app` and then `open
+   build/Minutes.app`.
 2. Click the menu bar item and press Record. Answer the macOS prompt asking to
    record what your Mac plays. If no prompt appears, open System Settings,
    Privacy and Security, and look for minutes under the audio recording entry.
@@ -280,13 +346,14 @@ app says this once, on first run. It is product design, not decoration.
 ## Layout
 
 ```
-Sources/MinutesCore     settings, capture, speech, notes, storage, pipeline
-Sources/Minutes         the menu bar app
-Sources/MinutesCLI      the command line face
-Sources/MinutesChecks   the verification suite
-packaging/macos         Info.plist for the app bundle
-scripts/build-app.sh    assembles and ad-hoc signs Minutes.app
-docs/decisions          the choices the product spec left open
+Sources/MinutesCore         settings, capture, speech, notes, storage, pipeline
+Sources/Minutes             the menu bar app
+Sources/MinutesCLI          the command line face
+Sources/MinutesChecks       the verification suite
+packaging/macos             Info.plist and entitlements for the app bundle
+scripts/build-app.sh        assembles and signs Minutes.app, ad-hoc or Developer ID
+scripts/package-release.sh  the signed, notarised, stapled disk image
+docs/decisions              the choices the product spec left open
 ```
 
 ## Why the checks are an executable and not XCTest
