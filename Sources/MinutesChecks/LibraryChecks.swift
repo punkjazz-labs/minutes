@@ -137,6 +137,73 @@ func libraryChecks(_ run: CheckRun) async throws {
         anchored.lines.contains { if case .heading = $0.kind { return true } else { return false } },
         "a heading is kept as a heading")
 
+    // Two people talking in the same second. Timecodes are whole seconds, so
+    // both lines carry one timecode between them, and taking the first one
+    // lands the chip on the other speaker.
+    let sameSecond = TranscriptFile.lines(
+        markdown: Transcript(
+            segments: [
+                TranscriptSegment(track: .me, start: 12, end: 14, text: "I think we should hold the price"),
+                TranscriptSegment(
+                    track: .others, start: 12, end: 15, text: "we can only pay ten thousand for this"),
+            ],
+            engine: "e", model: "m", recordedAt: Date(), duration: 60
+        ).markdown(title: "Two at once"))
+
+    run.equal(sameSecond.count, 2, "both lines of the same second are read back")
+    run.equal(sameSecond[0].timecode, sameSecond[1].timecode, "the two lines really do share one timecode")
+
+    let shared = NoteAnchoring.linesByTimecode(sameSecond)
+    run.equal(
+        NoteAnchoring.lineIndex(
+            for: "00:00:12", quoting: "They would only pay ten thousand for this.", in: shared) ?? -1,
+        1,
+        "a chip lands on the line whose words the note quotes")
+    run.equal(
+        NoteAnchoring.lineIndex(
+            for: "00:00:12", quoting: "You wanted to hold the price.", in: shared) ?? -1,
+        0,
+        "the same second resolves the other way for the other speaker's words")
+    run.expect(
+        NoteAnchoring.lineIndex(for: "00:00:12", quoting: "The two sides disagreed.", in: shared) == nil,
+        "words that name neither line get no chip at all")
+    run.expect(
+        NoteAnchoring.lineIndex(for: "00:04:00", quoting: "anything", in: shared) == nil,
+        "a timecode the transcript does not hold still points nowhere")
+
+    let ambiguous = NoteAnchoring.anchor(
+        "- The two sides did not agree. [00:00:12]", to: sameSecond)
+    run.expect(
+        ambiguous.lines.isEmpty,
+        "a line whose timestamp cannot be decided is taken out of the notes")
+    run.expect(
+        ambiguous.unanchored.contains { $0.contains("did not agree") },
+        "a line whose timestamp cannot be decided goes to the box that says it is not in the transcript")
+
+    let decided = NoteAnchoring.anchor(
+        "- They would only pay ten thousand for this. [00:00:12]", to: sameSecond)
+    run.equal(
+        decided.lines.first?.anchors.first?.lineIndex ?? -1, 1,
+        "a note that quotes one of the two lines is anchored to that line")
+
+    // The same rule for an answer, which is prose and not a bullet, so the
+    // sentence around the timestamp is what decides it.
+    let answer = "Nothing was settled. The other side would only pay ten thousand for this [00:00:12]."
+    guard let bracket = answer.firstIndex(of: "[") else {
+        run.failed("the check could not find the timestamp in its own fixture")
+        return
+    }
+    run.equal(
+        NoteAnchoring.lineIndex(
+            for: "00:00:12",
+            quoting: NoteAnchoring.context(around: bracket, in: answer),
+            in: shared) ?? -1,
+        1,
+        "a timestamp inside an answer lands on the line that sentence quotes")
+    run.expect(
+        !NoteAnchoring.context(around: bracket, in: answer).contains("Nothing was settled"),
+        "the sentence around the timestamp decides it, and not the whole answer")
+
     // MARK: - The library and search
 
     run.section("Meeting library")

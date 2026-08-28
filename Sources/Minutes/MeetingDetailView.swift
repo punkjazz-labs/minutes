@@ -14,11 +14,13 @@ enum AnchorLink {
     }
 
     /// The answer with its timestamps turned into chips that jump.
+    ///
+    /// An answer follows the same rule the notes follow: a chip never lands on
+    /// the wrong words. Two people who spoke in the same second give two lines
+    /// with one timecode between them, so the sentence the timestamp sits in
+    /// decides which line it points at, and an undecidable one gets no link.
     static func attributed(_ text: String, transcript: [TranscriptLine]) -> AttributedString {
-        var byTimecode: [String: Int] = [:]
-        for line in transcript where byTimecode[line.timecode] == nil {
-            byTimecode[line.timecode] = line.index
-        }
+        let linesByTimecode = NoteAnchoring.linesByTimecode(transcript)
 
         var out = AttributedString()
         var rest = Substring(text)
@@ -34,7 +36,10 @@ enum AnchorLink {
             out.append(AttributedString(String(rest[..<open])))
             var chip = AttributedString(Timecode.short(candidate))
             chip.font = .mono(Size.label)
-            if let index = byTimecode[candidate], let url = url(line: index) {
+            let quoted = NoteAnchoring.context(around: open, in: text)
+            if let index = NoteAnchoring.lineIndex(for: candidate, quoting: quoted, in: linesByTimecode),
+                let url = url(line: index)
+            {
                 chip.link = url
                 chip.foregroundColor = Ink.accentDeep
             } else {
