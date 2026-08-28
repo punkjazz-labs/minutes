@@ -47,8 +47,17 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
     /// Tracks that ran but carried nothing but digital zero. Absent from
     /// meetings written before system audio was captured at all.
     public var tracksSilent: [String]?
+    /// Tracks that were recorded and that the speech engine refused. Their
+    /// audio is kept whatever the delete setting says, because the recording is
+    /// the only record of those words that exists.
+    public var tracksNotTranscribed: [String]?
+    /// What the speech engine said when it refused.
+    public var transcriptionFailureReason: String?
     public var audioKept: Bool
     public var syncService: String?
+
+    /// True when the speech engine refused at least one track of this meeting.
+    public var transcriptionFailed: Bool { !(tracksNotTranscribed ?? []).isEmpty }
 
     public init(
         title: String,
@@ -65,6 +74,8 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
         tracksRecorded: [String],
         tracksMissing: [String],
         tracksSilent: [String] = [],
+        tracksNotTranscribed: [String] = [],
+        transcriptionFailureReason: String? = nil,
         audioKept: Bool,
         syncService: String? = nil
     ) {
@@ -82,6 +93,8 @@ public struct MeetingMeta: Codable, Sendable, Equatable {
         self.tracksRecorded = tracksRecorded
         self.tracksMissing = tracksMissing
         self.tracksSilent = tracksSilent
+        self.tracksNotTranscribed = tracksNotTranscribed
+        self.transcriptionFailureReason = transcriptionFailureReason
         self.audioKept = audioKept
         self.syncService = syncService
     }

@@ -73,6 +73,7 @@ public struct MeetingPipeline: Sendable {
         var totalAudio: TimeInterval = 0
         var silentTracks: [AudioTrack] = []
         var recordedTracks: [AudioTrack] = []
+        var failedTracks: [TrackFailure] = []
 
         for capture in captures {
             duration = max(duration, capture.duration)
@@ -101,14 +102,26 @@ public struct MeetingPipeline: Sendable {
             }
 
             log("Transcribing the \(capture.track.label) track on this Mac.")
-            let output = try await transcriber.transcribe(fileAt: destination, track: capture.track)
-            segments.append(contentsOf: output.segments)
-            totalProcessing += output.processingTime
-            totalAudio += output.audioDuration
-            let factor = output.realtimeFactor
-            if factor > 0 {
-                log(String(format: "Transcribed %@ in %.1f s, %.0f times faster than real time.",
-                           Timecode.string(from: output.audioDuration), output.processingTime, factor))
+            do {
+                let output = try await transcriber.transcribe(fileAt: destination, track: capture.track)
+                segments.append(contentsOf: output.segments)
+                totalProcessing += output.processingTime
+                totalAudio += output.audioDuration
+                let factor = output.realtimeFactor
+                if factor > 0 {
+                    log(String(format: "Transcribed %@ in %.1f s, %.0f times faster than real time.",
+                               Timecode.string(from: output.audioDuration), output.processingTime, factor))
+                }
+            } catch {
+                // The speech engine refusing costs the words of this track. It
+                // must not cost the meeting. The recording is already in the
+                // meeting folder, so the refusal is written down, the audio is
+                // kept whatever the delete setting says, and every step below
+                // still runs. A meeting that is not written up at all is a
+                // meeting the library cannot show and the owner cannot reach.
+                failedTracks.append(TrackFailure(track: capture.track, reason: error.localizedDescription))
+                log("The \(capture.track.label) track could not be transcribed: \(error.localizedDescription)")
+                log("The recording of that track was kept, so it can be transcribed again.")
             }
         }
 
@@ -119,7 +132,8 @@ public struct MeetingPipeline: Sendable {
             recordedAt: startedAt,
             duration: duration,
             missingTracks: missingTracks,
-            silentTracks: silentTracks
+            silentTracks: silentTracks,
+            failedTracks: failedTracks
         )
         try store.writeTranscript(transcript, title: title, to: directory)
         log("Transcript written.")
@@ -128,7 +142,10 @@ public struct MeetingPipeline: Sendable {
         var pendingReason: String?
 
         if transcript.segments.isEmpty {
-            pendingReason = "No speech was recognised, so no notes were requested."
+            pendingReason =
+                failedTracks.isEmpty
+                ? "No speech was recognised, so no notes were requested."
+                : "The speech engine could not read this meeting, so no notes were requested. The audio was kept."
             log(pendingReason!)
         } else {
             log("Sending the transcript to \(settings.notesBaseURL) as \(settings.notesModel).")
@@ -170,18 +187,23 @@ public struct MeetingPipeline: Sendable {
             tracksRecorded: recordedTracks.map { $0.rawValue },
             tracksMissing: missingTracks.map { $0.rawValue },
             tracksSilent: silentTracks.map { $0.rawValue },
-            audioKept: settings.keepAudioAfterTranscription,
+            tracksNotTranscribed: failedTracks.map { $0.track.rawValue },
+            transcriptionFailureReason: failedTracks.first?.reason,
+            audioKept: settings.keepAudioAfterTranscription || !failedTracks.isEmpty,
             syncService: store.syncService
         )
         try store.writeMeta(meta, to: directory)
 
         // Audio goes unless the owner asked to keep it, and only once the
-        // transcript is on disk.
-        if !settings.keepAudioAfterTranscription && !transcript.segments.isEmpty {
+        // transcript is on disk. A track the speech engine refused has no
+        // transcript, so its recording is the only record of it and it stays.
+        if !settings.keepAudioAfterTranscription && !transcript.segments.isEmpty && failedTracks.isEmpty {
             try store.deleteAudio(in: directory)
             log("Audio deleted. The transcript is what remains.")
         } else if settings.keepAudioAfterTranscription {
             log("Audio kept, because the setting says to keep it.")
+        } else if !failedTracks.isEmpty {
+            log("Audio kept, because the speech engine could not read it and the recording is all there is.")
         }
 
         return PipelineOutcome(

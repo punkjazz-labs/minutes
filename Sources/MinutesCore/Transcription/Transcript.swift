@@ -43,6 +43,21 @@ public enum Timecode {
     }
 }
 
+/// A track whose audio was recorded and which the speech engine would not read.
+///
+/// This is a third thing, next to a track that never ran and a track that
+/// carried nothing: the recording is there and it is good, and only the words
+/// are missing.
+public struct TrackFailure: Sendable, Equatable, Codable {
+    public let track: AudioTrack
+    public let reason: String
+
+    public init(track: AudioTrack, reason: String) {
+        self.track = track
+        self.reason = reason
+    }
+}
+
 /// A whole meeting's speech, plus the honest provenance of it.
 public struct Transcript: Sendable, Equatable {
     public var segments: [TranscriptSegment]
@@ -56,6 +71,9 @@ public struct Transcript: Sendable, Equatable {
     /// from a track that never ran, because they are different facts and the
     /// owner can act on them differently.
     public var silentTracks: [AudioTrack]
+    /// Tracks that were recorded and that the speech engine refused, with what
+    /// it said. The audio of these tracks is kept.
+    public var failedTracks: [TrackFailure]
 
     public init(
         segments: [TranscriptSegment],
@@ -64,7 +82,8 @@ public struct Transcript: Sendable, Equatable {
         recordedAt: Date,
         duration: TimeInterval,
         missingTracks: [AudioTrack] = [],
-        silentTracks: [AudioTrack] = []
+        silentTracks: [AudioTrack] = [],
+        failedTracks: [TrackFailure] = []
     ) {
         self.segments = segments.sorted { $0.start < $1.start }
         self.engine = engine
@@ -73,6 +92,7 @@ public struct Transcript: Sendable, Equatable {
         self.duration = duration
         self.missingTracks = missingTracks
         self.silentTracks = silentTracks
+        self.failedTracks = failedTracks
     }
 
     /// True when both sides of the meeting were actually heard. The warning
@@ -102,6 +122,11 @@ public struct Transcript: Sendable, Equatable {
         for track in silentTracks where !missingTracks.contains(track) {
             lines.append(
                 "The \(track.label) track was recorded but every sample was digital zero, so nothing was heard on it.")
+        }
+        for failure in failedTracks {
+            lines.append(
+                "The \(failure.track.label) track was recorded, but the speech engine could not read it: \(failure.reason) The audio was kept, so this track can be transcribed again."
+            )
         }
         lines.append("")
         if segments.isEmpty {

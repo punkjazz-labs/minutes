@@ -229,6 +229,7 @@ private struct MeetingRow: View {
         case .written: return Ink.muted
         case .pending: return Ink.warn
         case .transcriptOnly: return Ink.faint
+        case .transcriptionFailed: return Ink.warn
         }
     }
 }

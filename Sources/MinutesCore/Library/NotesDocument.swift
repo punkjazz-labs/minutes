@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where a meeting stands, in the three words the library shows.
+/// Where a meeting stands, in the few words the library shows.
 public enum NotesState: String, Sendable, Equatable, CaseIterable {
     /// The model answered and the notes are on disk.
     case written
@@ -8,12 +8,16 @@ public enum NotesState: String, Sendable, Equatable, CaseIterable {
     case pending
     /// A transcript with no notes file beside it at all.
     case transcriptOnly
+    /// The audio was recorded and the speech engine would not read it. The
+    /// recording is kept, so the meeting is still there to be tried again.
+    case transcriptionFailed
 
     public var label: String {
         switch self {
         case .written: return "Written"
         case .pending: return "Waiting for Spark"
         case .transcriptOnly: return "Transcript only"
+        case .transcriptionFailed: return "Transcription failed"
         }
     }
 }

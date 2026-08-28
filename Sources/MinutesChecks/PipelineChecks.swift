@@ -1,6 +1,20 @@
 import Foundation
 import MinutesCore
 
+/// A speech engine that refuses, the way an incomplete model download or a
+/// Core ML failure makes the real one refuse.
+private struct RefusingTranscriber: Transcribing {
+    let engineName = "FluidAudio Parakeet TDT (fake)"
+    let modelName = "parakeet-tdt-0.6b-v3-coreml"
+
+    func modelsAreReady() -> Bool { true }
+    func prepare(progress: (@Sendable (Double) -> Void)?) async throws {}
+
+    func transcribe(fileAt url: URL, track: AudioTrack) async throws -> TranscriptionOutput {
+        throw TranscriptionError.engineFailure("the model could not be loaded")
+    }
+}
+
 private struct StubNotes: NotesGenerating {
     let body: String?
     let error: NotesError?
@@ -205,6 +219,60 @@ func pipelineChecks(_ run: CheckRun) async throws {
         let meta = try MeetingStore(root: root).readMeta(in: outcome.directory)
         run.equal(meta.tracksSilent ?? [], ["others"], "meta.json names the track that heard nothing")
         run.equal(meta.tracksRecorded, ["me"], "meta.json does not count a silent track as recorded")
+    }
+
+    // The speech engine refuses. An incomplete model download, a Core ML
+    // failure, any engine error. The meeting must survive it: the recording is
+    // already in the folder and the folder is the only place it exists.
+    do {
+        let root = try Scratch.directory("pipeline-engine-failed")
+        var settings = AppSettings(notesFolderPath: root.path)
+        settings.keepAudioAfterTranscription = false
+
+        let outcome = try await MeetingPipeline(
+            settings: settings,
+            store: MeetingStore(root: root),
+            transcriber: RefusingTranscriber(),
+            notes: StubNotes(body: "notes", error: nil)
+        ).run(
+            title: "The engine gave up",
+            startedAt: Date(timeIntervalSince1970: 0),
+            ownerNotes: "- do not lose this",
+            captures: [try staged(.me, in: root)],
+            missingTracks: [.others])
+
+        run.expect(
+            FileManager.default.fileExists(atPath: outcome.directory.audioURL(for: .me).path),
+            "a speech engine failure keeps the audio, whatever the delete setting says")
+
+        let transcript = try String(contentsOf: outcome.directory.transcriptURL, encoding: .utf8)
+        run.expect(
+            transcript.contains("the speech engine could not read it"),
+            "the transcript says the speech engine refused the track")
+        run.expect(
+            transcript.contains("the model could not be loaded"),
+            "the transcript carries the reason the engine gave")
+
+        let notes = try String(contentsOf: outcome.directory.notesURL, encoding: .utf8)
+        run.expect(notes.contains("- do not lose this"), "an engine failure never costs what the owner typed")
+
+        let meta = try MeetingStore(root: root).readMeta(in: outcome.directory)
+        run.equal(meta.tracksNotTranscribed ?? [], ["me"], "meta.json names the track the engine refused")
+        run.expect(meta.transcriptionFailed, "meta.json records that transcription failed")
+        run.expect(meta.audioKept, "meta.json records that the audio was kept")
+
+        // The whole point: the meeting is reachable afterwards.
+        if let summary = MeetingSummary.read(outcome.directory) {
+            run.equal(
+                summary.notesState.label, "Transcription failed",
+                "the library row says the transcription failed")
+            run.equal(summary.title, "The engine gave up", "the meeting keeps its title in the library")
+        } else {
+            run.failed("a meeting whose transcription failed must still be a row in the library")
+        }
+        run.equal(
+            try MeetingLibrary(root: root).meetings().count, 1,
+            "a speech engine failure never removes the meeting from the library")
     }
 
     // A track that delivered no frames at all. An empty 44 byte WAV is not a

@@ -85,7 +85,12 @@ public struct MeetingSummary: Sendable, Equatable, Identifiable {
             ?? 0
 
         let state: NotesState
-        if !hasNotes {
+        if meta?.transcriptionFailed == true {
+            // The recording is on the disk and the speech engine would not read
+            // it. That is the fact the row has to carry, above anything the
+            // notes file says, because it is the one the owner can act on.
+            state = .transcriptionFailed
+        } else if !hasNotes {
             state = .transcriptOnly
         } else if let document {
             state = document.state
