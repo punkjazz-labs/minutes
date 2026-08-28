@@ -63,6 +63,10 @@ public struct TapRebuildPolicy: Sendable, Equatable {
             "The system audio track has been digital zero for \(whole) seconds. Rebuilding the tap, attempt \(rebuildCount) of \(maximumRebuilds). Nothing playing sounds exactly the same, so this is a retry and not a diagnosis."
     }
 
+    /// Said when the retries are used up and the track is still carrying
+    /// nothing. It speaks about the track from here on, not about the whole
+    /// track, because a tap that died halfway through a meeting leaves real
+    /// audio behind it and digital zero in front of it.
     public static let exhaustedNotice =
-        "The system audio tap was rebuilt as often as minutes will try and the track was still digital zero. It is reported as silent rather than written up as a recording."
+        "The system audio tap was rebuilt as often as minutes will try and the track is still digital zero. What was heard before this is in the transcript. Nothing has been heard since."
 }

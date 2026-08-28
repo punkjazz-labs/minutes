@@ -62,6 +62,20 @@ func audioChecks(_ run: CheckRun) throws {
     quiet.observe((0..<16_000).map { index in Float(index % 7 == 0 ? 0.001 : -0.0005) })
     run.expect(!quiet.isAllZero, "a quiet room with a noise floor does not read as no signal")
 
+    // A source that delivered no buffers at all heard exactly as much as a
+    // source that delivered silence, and is written up the same way.
+    let empty = SignalCheck()
+    run.equal(empty.frameCount, 0, "a capture that was never fed has no frames")
+    run.expect(empty.isAllZero, "a track that delivered no frames is not a recorded track")
+    let emptyResult = CaptureResult(
+        track: .others,
+        fileURL: scratch.appendingPathComponent("no-frames.wav"),
+        duration: 0,
+        signal: empty)
+    run.expect(
+        emptyResult.summary.contains("Nothing was heard"),
+        "a track that delivered no frames says nothing was heard")
+
     var stalled = SignalCheck()
     stalled.observe([0.4, 0.3])
     stalled.observe([Float](repeating: 0, count: 16_000 * 9))

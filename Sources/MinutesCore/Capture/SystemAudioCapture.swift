@@ -178,6 +178,13 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
             append(
                 "Nothing was heard on the system audio track. Either nobody was playing sound on this Mac, or macOS never granted minutes permission to record what it plays. There is no way for an app to ask which, so this is reported and not guessed."
             )
+        } else if tapIsSpent(signal: signal) {
+            // The track carried audio and then stopped, and the rebuilds did
+            // not bring it back. Saying nothing here writes that meeting up as
+            // a normal one.
+            append(
+                "The system audio track carried audio and then went quiet for the rest of the meeting, after the tap was rebuilt as often as minutes will try. What was heard before that is in the transcript."
+            )
         }
         if let failure = writer.writeFailure {
             append("The system audio track stopped being written: \(failure.localizedDescription)")
@@ -204,7 +211,6 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         }
         let signal = writer.signal
         let wanted = policy.shouldRebuild(signal: signal)
-        let exhausted = policy.isExhausted
         let alreadySaid = exhaustedReported
         lock.unlock()
 
@@ -215,12 +221,29 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
 
         // Say once, and only once, that the retries are used up and the track
         // is still carrying nothing.
-        if exhausted, !alreadySaid, signal.isAllZero {
+        if !alreadySaid, tapIsSpent(signal: signal) {
             lock.lock()
             exhaustedReported = true
             lock.unlock()
             append(TapRebuildPolicy.exhaustedNotice)
         }
+    }
+
+    /// True when the tap was rebuilt as often as it will be and the track has
+    /// been digital zero ever since.
+    ///
+    /// This is the state the rebuild policy exists for, and it is invisible to
+    /// any measure of the whole track: a tap that carried two minutes of a
+    /// meeting and then died has a peak above zero for the rest of that
+    /// meeting, however dead it is now. What is left of the track is what says
+    /// so.
+    private func tapIsSpent(signal: SignalCheck) -> Bool {
+        lock.lock()
+        let exhausted = policy.isExhausted
+        let threshold = policy.silenceThreshold
+        lock.unlock()
+        return exhausted
+            && signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: threshold)
     }
 
     /// Rebuilds around whatever the Mac is now playing through. Public for the

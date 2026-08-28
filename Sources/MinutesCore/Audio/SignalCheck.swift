@@ -32,10 +32,17 @@ public struct SignalCheck: Sendable, Equatable {
         return Float((sumOfSquares / Double(frameCount)).squareRoot())
     }
 
-    /// Every sample seen so far was exactly zero. This is the tap failure the
-    /// spec calls out, and it is also what an unrecorded device looks like.
+    /// Every sample seen so far was exactly zero, which includes having seen no
+    /// sample at all. This is the tap failure the spec calls out, and it is also
+    /// what an unrecorded device looks like.
+    ///
+    /// A source that delivered no buffers heard exactly as much as a source
+    /// that delivered digital silence, so the two are written up the same way.
+    /// The empty one used to pass as a recorded track, which put a 44 byte file
+    /// in the meeting folder, named the track under `tracksRecorded`, and let
+    /// the detail header say both sides were recorded.
     public var isAllZero: Bool {
-        frameCount > 0 && peak == 0
+        peak == 0
     }
 
     /// Nothing but digital zero for this long. A real room floor is never

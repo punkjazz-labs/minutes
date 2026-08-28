@@ -341,6 +341,45 @@ func systemAudioChecks(_ run: CheckRun) throws {
         }
     }
 
+    // A tap that carried a real meeting and then died. This is the exact case
+    // the rebuild policy exists for, and the whole track is not digital zero,
+    // so nothing about the whole track can see it.
+    do {
+        let url = scratch.appendingPathComponent("died-halfway.wav")
+        let source = ScriptedSystemAudioSource()
+        let capture = SystemAudioCapture(
+            policy: TapRebuildPolicy(silenceThreshold: 0.2, maximumRebuilds: 2),
+            watchdogInterval: 0,
+            watchesOutputDevice: false,
+            source: { source })
+
+        try capture.start(writingTo: url)
+        source.feed(value: 0.5, seconds: 1)
+        source.feed(value: 0, seconds: 1)
+        capture.checkForStalledTap()
+        source.feed(value: 0, seconds: 1)
+        capture.checkForStalledTap()
+        source.feed(value: 0, seconds: 1)
+        capture.checkForStalledTap()
+
+        let result = try capture.stop()
+
+        run.equal(capture.rebuildCount, 2, "a tap that went quiet is rebuilt up to the limit")
+        run.expect(!result.signal.isAllZero, "the track is not digital zero, because it carried a real meeting")
+        run.expect(
+            result.notes.contains { $0.contains("rebuilt as often as minutes will try") },
+            "a tap that died mid-meeting still says the retries are used up")
+        run.equal(
+            result.notes.filter { $0.contains("Nothing has been heard since") }.count, 1,
+            "the retries notice is said once and not on every look")
+        run.expect(
+            result.notes.contains { $0.contains("went quiet for the rest of the meeting") },
+            "the summary at stop says the track died rather than writing the meeting up as normal")
+        run.expect(
+            !result.notes.contains { $0.contains("Nothing was heard on the system audio track") },
+            "a track that carried audio is not reported as having heard nothing")
+    }
+
     // A stop that fails on one track still stops the other. This is the worst
     // failure the app can have: a tap that outlives Stop keeps recording what
     // the Mac plays while the menu bar says nothing is being recorded.

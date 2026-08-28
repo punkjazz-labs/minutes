@@ -207,6 +207,44 @@ func pipelineChecks(_ run: CheckRun) async throws {
         run.equal(meta.tracksRecorded, ["me"], "meta.json does not count a silent track as recorded")
     }
 
+    // A track that delivered no frames at all. An empty 44 byte WAV is not a
+    // recording of the other side, and must not be written up as one.
+    do {
+        let root = try Scratch.directory("pipeline-empty-track")
+        var settings = AppSettings(notesFolderPath: root.path)
+        settings.keepAudioAfterTranscription = true
+
+        let emptyURL = root.appendingPathComponent("no-frames.wav")
+        try WAVWriter(url: emptyURL).close()
+        let nothing = CaptureResult(track: .others, fileURL: emptyURL, duration: 0, signal: SignalCheck())
+
+        let outcome = try await makePipeline(settings: settings, root: root, notes: StubNotes(body: "notes", error: nil))
+            .run(
+                title: "No frames on the other side",
+                startedAt: Date(timeIntervalSince1970: 0),
+                ownerNotes: "",
+                captures: [try staged(.me, in: root), nothing])
+
+        let meta = try MeetingStore(root: root).readMeta(in: outcome.directory)
+        run.equal(meta.tracksSilent ?? [], ["others"], "a track that delivered no frames is named under tracksSilent")
+        run.equal(meta.tracksRecorded, ["me"], "a track that delivered no frames is not a recorded track")
+        run.expect(
+            outcome.transcript.segments.allSatisfy { $0.track == .me },
+            "a track that delivered no frames is never sent to the speech engine")
+        run.expect(
+            !FileManager.default.fileExists(atPath: outcome.directory.audioURL(for: .others).path),
+            "an empty WAV is discarded rather than stored as a recording")
+        run.expect(!outcome.transcript.bothSidesWereHeard, "an empty second track is not two sides heard")
+
+        if let summary = MeetingSummary.read(outcome.directory) {
+            run.expect(
+                !summary.bothSidesRecorded,
+                "the meeting does not claim both sides were recorded")
+        } else {
+            run.failed("the meeting should still be a row in the library")
+        }
+    }
+
     // A silent track.
     do {
         let root = try Scratch.directory("pipeline-silent")
