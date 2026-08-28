@@ -22,9 +22,16 @@ public enum AudioFormat {
     public static let bitsPerSample: Int = 16
 }
 
-/// Appends 16-bit PCM to a WAV file and patches the header on close, so a
-/// recording that is still running is already a readable file up to its last
-/// flush and a crash costs only the header sizes.
+/// Appends 16-bit PCM to a WAV file and rewrites the header sizes after every
+/// append, so a recording that is still running is already a readable file up
+/// to its last flush and a crash costs only the samples that were never
+/// written.
+///
+/// The header is 44 bytes and every append already knows the running frame
+/// count, so keeping it true costs two seeks and a short write per buffer. The
+/// alternative was a header that says zero frames until `close()` runs, which
+/// makes a force quit, a crash or a power cut during a meeting cost the whole
+/// recording.
 public final class WAVWriter {
     private let handle: FileHandle
     private let sampleRate: Int
@@ -61,14 +68,23 @@ public final class WAVWriter {
         }
         try handle.write(contentsOf: Data(bytes))
         framesWritten += samples.count / channels
+        try patchHeader()
     }
 
     public func close() throws {
         guard !closed else { return }
         closed = true
+        try patchHeader()
+        try handle.close()
+    }
+
+    /// Rewrites the two size fields, which is the whole header, and puts the
+    /// write position back where the next append needs it.
+    private func patchHeader() throws {
+        let end = try handle.offset()
         try handle.seek(toOffset: 0)
         try handle.write(contentsOf: WAVWriter.header(sampleRate: sampleRate, channels: channels, frames: framesWritten))
-        try handle.close()
+        try handle.seek(toOffset: end)
     }
 
     deinit {
@@ -144,8 +160,15 @@ public enum WAVReader {
 
         while offset + 8 <= data.count {
             let chunkID = string(data, offset, 4)
-            let chunkSize = Int(uint32(data, offset + 4))
+            let declaredSize = Int(uint32(data, offset + 4))
             let body = offset + 8
+
+            // A recording that was interrupted before its header was patched
+            // says zero here. The samples are on the disk, so the rest of the
+            // file is the recording. Reading it back is better than refusing a
+            // whole meeting whose audio is sitting there.
+            let chunkSize =
+                (chunkID == "data" && declaredSize == 0) ? max(0, data.count - body) : declaredSize
             guard body + chunkSize <= data.count || chunkID == "data" else { throw WAVError.truncated }
 
             if chunkID == "fmt " {

@@ -23,6 +23,36 @@ func audioChecks(_ run: CheckRun) throws {
     let worstError = zip(samples, read.samples).map { abs($0 - $1) }.max() ?? 1
     run.expect(worstError < 0.001, "sample values survive the round trip")
 
+    // A meeting that was never closed: a force quit, a crash or a power cut
+    // while the app was recording. The samples are on the disk and the app has
+    // to be able to read them back.
+    let killedURL = scratch.appendingPathComponent("never-closed.wav")
+    do {
+        let live = try WAVWriter(url: killedURL)
+        try live.append(samples)
+        try live.append(samples)
+        // close() is never called, which is exactly what a force quit does.
+
+        let recovered = try WAVReader.read(url: killedURL)
+        run.equal(recovered.samples.count, samples.count * 2, "a recording that never closed reads back whole")
+        run.equal(recovered.sampleRate, 16_000, "the header of an unclosed recording is already true")
+        run.close(recovered.duration, 0.2, 0.001, "an unclosed recording reports the length it holds")
+    }
+
+    // And the other half of the same promise: a reader that meets a header
+    // saying zero frames takes the rest of the file rather than refusing.
+    do {
+        var bytes = try Data(contentsOf: toneURL)
+        // The RIFF size and the data size, the two fields close() patches.
+        for field in [4, 40] {
+            for byte in 0..<4 { bytes[field + byte] = 0 }
+        }
+        let recovered = try WAVReader.read(data: bytes)
+        run.equal(
+            recovered.samples.count, samples.count,
+            "a data chunk that says zero bytes is read to the end of the file")
+    }
+
     // The all-zero detector, the failure the spec calls out.
     var silent = SignalCheck()
     silent.observe([Float](repeating: 0, count: 16_000))
