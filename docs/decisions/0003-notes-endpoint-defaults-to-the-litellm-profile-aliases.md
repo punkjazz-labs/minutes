@@ -36,11 +36,9 @@ Every request carries:
 - `x-litellm-customer-id: minutes`, the stable application id
 - `metadata: {"operation": "meeting-notes-enhance"}` in the JSON body
 
-The operation to profile mapping still has to be registered in the
-authoritative registry on the Mac Mini at
-`/Users/sergio/.hermes/model-profiles.yaml` before this app sends production
-traffic. That registration is not done by this repository and is not claimed
-to be done.
+The operation to profile mapping still has to be registered in the profile
+registry on the gateway host before this app sends production traffic. That
+registration is not done by this repository and is not claimed to be done.
 
 ## The key
 

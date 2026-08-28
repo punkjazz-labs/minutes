@@ -8,8 +8,8 @@ import Foundation
 /// ScreenCaptureKit and it is not a virtual output device: a tap observes the
 /// output instead of rerouting it, so the owner keeps hearing the meeting, and
 /// it uses its own permission category with no screen recording indicator.
-/// See docs/decisions/0002 for why, and docs/decisions/0004 for what this does
-/// when the tap goes quiet.
+/// Decision 0002, which the tap superseded, says why it is a tap. Decision 0004
+/// says what it does when it goes quiet. Both are in docs/decisions.
 ///
 /// Two things about this permission are unusual and shape the whole type.
 /// macOS grants system audio recording silently: there is no API to ask

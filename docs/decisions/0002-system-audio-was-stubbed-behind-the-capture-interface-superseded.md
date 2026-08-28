@@ -1,11 +1,11 @@
-# 0002: system audio is stubbed in v0.1, behind the capture interface
+# 0002: system audio was stubbed in v0.1, behind the capture interface
 
 Date: 2026-08-04
 Status: superseded on 2026-08-12. The stub was replaced in v0.2 by a real Core
 Audio process tap in `SystemAudioCapture`, built to the constraints listed
 below. The reasoning here is kept because it is why the tap is a tap and not
 ScreenCaptureKit or a virtual device. What the tap does when it goes quiet is
-decision 0004.
+`0004-a-quiet-tap-is-rebuilt-three-times-and-then-reported.md`.
 
 ## Context
 
