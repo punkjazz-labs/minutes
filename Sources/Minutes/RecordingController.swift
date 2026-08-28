@@ -30,8 +30,10 @@ final class RecordingController: ObservableObject {
     @Published private(set) var modelReady: Bool
     @Published private(set) var modelDownloadProgress: Double?
 
-    @Published var title: String = ""
-    @Published var bullets: String = ""
+    /// What the owner typed for the meeting being recorded now, or for the one
+    /// about to be recorded. Cleared when a meeting is written up and never
+    /// before that.
+    @Published var draft = MeetingDraft()
     @Published var settings: AppSettings
     @Published var apiKeyField: String = ""
     @Published var endpointStatus: String?
@@ -277,11 +279,9 @@ final class RecordingController: ObservableObject {
 
         // Every track is summarised by the pipeline, in the order it processes
         // them, so nothing is reported twice or reported for one track only.
-        let meetingTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? defaultTitle()
-            : title
+        let meetingTitle = draft.meetingTitle(or: defaultTitle())
         let started = startedAt ?? Date()
-        let ownerNotes = bullets
+        let ownerNotes = draft.bullets
         let currentSettings = settings
 
         phase = .working("Transcribing on this Mac.")
@@ -308,6 +308,11 @@ final class RecordingController: ObservableObject {
                     Task { @MainActor in self.append(message) }
                 }
                 lastMeetingURL = outcome.directory.url
+                // The title and the bullets are in that meeting's folder now,
+                // so they do not carry into the next meeting. A write-up that
+                // failed keeps them, because then the folder does not have
+                // them and the app is the only place they exist.
+                draft.clearAfterWriteUp()
                 phase = .finished
             } catch {
                 append("The meeting could not be written up: \(error.localizedDescription)")

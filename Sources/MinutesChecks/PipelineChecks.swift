@@ -335,6 +335,31 @@ func pipelineChecks(_ run: CheckRun) async throws {
         run.expect(transcript.contains("No audio was recorded on the Others track."), "the missing track is named")
     }
 
+    // What the owner typed belongs to the meeting it was typed for.
+    do {
+        var draft = MeetingDraft(title: "Pricing call", bullets: "- Bob agreed to 15 percent")
+        run.equal(draft.meetingTitle(or: "Meeting 5 August 14:00"), "Pricing call", "a typed title is the title")
+        run.equal(
+            MeetingDraft(bullets: "x").meetingTitle(or: "Meeting 5 August 14:00"),
+            "Meeting 5 August 14:00",
+            "an empty title falls back to the time of day")
+        run.equal(
+            MeetingDraft(title: "   ").meetingTitle(or: "Meeting 5 August 14:00"),
+            "Meeting 5 August 14:00",
+            "a title of spaces is not a title")
+
+        draft.clearAfterWriteUp()
+        run.equal(draft.title, "", "a meeting that was written up does not lend its title to the next one")
+        run.equal(draft.bullets, "", "a meeting that was written up does not lend its bullets to the next one")
+        run.expect(draft.isEmpty, "nothing at all carries into the next meeting")
+
+        // And the other half of the rule: words that are not on disk yet stay.
+        let typedBeforeRecording = MeetingDraft(title: "Pricing call", bullets: "- ask about the renewal")
+        run.expect(
+            !typedBeforeRecording.isEmpty,
+            "what a person typed before pressing record is not cleared by anything but a write-up")
+    }
+
     // Two meetings with the same title and time.
     do {
         let root = try Scratch.directory("pipeline-twice")

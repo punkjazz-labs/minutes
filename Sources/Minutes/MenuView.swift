@@ -37,7 +37,7 @@ struct MenuView: View {
                 Text("Notes you type during the meeting")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextEditor(text: $controller.bullets)
+                TextEditor(text: $controller.draft.bullets)
                     .font(.system(size: 12))
                     .frame(height: 96)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
@@ -90,7 +90,7 @@ struct MenuView: View {
 
     private var recordingRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Meeting title", text: $controller.title)
+            TextField("Meeting title", text: $controller.draft.title)
                 .textFieldStyle(.roundedBorder)
                 .disabled(controller.phase.isBusy)
 
