@@ -36,7 +36,7 @@ negative_memory: []
 project_skill: none
 ---
 # Start Here
-Current state: New private repository initialized by hermes-init. Project scope and implementation have not started. No deployment is configured.
+Current state: Public repository at v0.3. The app ships as a signed and notarised disk image on GitHub releases. The basement console links the latest release.
 Standing orders: Work on feature branches; keep documentation and tests current; proceed autonomously within the gates above.
 Escalation extras: none
 Verification: generic checklist only
