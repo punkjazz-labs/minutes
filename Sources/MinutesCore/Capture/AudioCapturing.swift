@@ -20,6 +20,13 @@ public enum AudioTrack: String, Codable, Sendable, CaseIterable {
         case .others: return "system.wav"
         }
     }
+
+    /// The tracks a meeting made from this one recording does not have. Naming
+    /// a fixed track here makes a meeting that says one track is both recorded
+    /// and missing.
+    public static func missing(whenRecordingOnly track: AudioTrack) -> [AudioTrack] {
+        allCases.filter { $0 != track }
+    }
 }
 
 public struct CaptureResult: Sendable {

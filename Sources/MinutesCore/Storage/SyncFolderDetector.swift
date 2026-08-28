@@ -50,6 +50,10 @@ public enum SyncFolderDetector {
         case "dropbox": return "Dropbox"
         case "google drive", "googledrive": return "Google Drive"
         case "onedrive": return "OneDrive"
+        // Box is found under ~/Library/CloudStorage as well, but it still
+        // mounts at ~/Box, and the privacy claim named Box while the code did
+        // not look for it there.
+        case "box": return "Box"
         default: return nil
         }
     }

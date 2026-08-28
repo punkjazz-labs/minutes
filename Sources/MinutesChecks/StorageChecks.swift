@@ -112,9 +112,27 @@ func storageChecks(_ run: CheckRun) throws {
     run.equal(
         SyncFolderDetector.service(for: URL(fileURLWithPath: "/Users/a/Library/CloudStorage/OneDrive-Work/x")) ?? "",
         "OneDrive", "a OneDrive mount is detected")
+    run.equal(
+        SyncFolderDetector.service(for: URL(fileURLWithPath: "/Users/a/Box/minutes")) ?? "", "Box",
+        "Box in its classic folder is detected")
+    run.equal(
+        SyncFolderDetector.service(for: URL(fileURLWithPath: "/Users/a/Library/CloudStorage/Box-Work/x")) ?? "",
+        "Box", "a Box file provider mount is detected")
     run.expect(
         SyncFolderDetector.service(for: URL(fileURLWithPath: "/Users/a/Documents/minutes")) == nil,
         "a plain Documents folder is not called a sync folder")
+
+    // What the command line meeting says it has. The track a file was recorded
+    // on cannot also be the track that is missing.
+    run.equal(
+        AudioTrack.missing(whenRecordingOnly: .others), [.me],
+        "a meeting made from an others recording is missing your own track")
+    run.equal(
+        AudioTrack.missing(whenRecordingOnly: .me), [.others],
+        "a meeting made from a microphone recording is missing the others track")
+    run.expect(
+        !AudioTrack.missing(whenRecordingOnly: .others).contains(.others),
+        "no track is ever both recorded and missing")
     run.equal(
         SyncFolderDetector.warning(for: URL(fileURLWithPath: "/Users/a/Dropbox/minutes")) ?? "",
         "This folder syncs to Dropbox. Your notes will be copied there.",

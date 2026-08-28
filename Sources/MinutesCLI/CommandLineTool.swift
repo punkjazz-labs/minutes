@@ -241,6 +241,12 @@ struct CommandLineTool {
                 let store = MeetingStore(settings: settings)
                 try FileManager.default.createDirectory(at: store.root, withIntermediateDirectories: true)
 
+                // The track the file was recorded on is the one the meeting
+                // has. Naming a fixed track as missing made `--track others`
+                // write a meeting that says the same track is both recorded
+                // and missing.
+                let recorded = track()
+
                 let outcome = try await MeetingPipeline(
                     settings: settings,
                     store: store,
@@ -251,9 +257,9 @@ struct CommandLineTool {
                     startedAt: Date(),
                     ownerNotes: readFile("bullets"),
                     captures: [
-                        CaptureResult(track: track(), fileURL: staged, duration: audio.duration, signal: signal)
+                        CaptureResult(track: recorded, fileURL: staged, duration: audio.duration, signal: signal)
                     ],
-                    missingTracks: [.others]
+                    missingTracks: AudioTrack.missing(whenRecordingOnly: recorded)
                 ) { message in
                     print(message)
                 }
