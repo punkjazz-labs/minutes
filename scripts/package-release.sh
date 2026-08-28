@@ -55,22 +55,46 @@ step() {
 notarise() {
 	local path="$1"
 	local json="$ROOT/build/notary-$(basename "$path").json"
-	local id status
+	local id status submit_status
 
+	# The exit code is captured rather than trusted to `set -e`. Some
+	# notarytool versions exit non-zero when Apple refuses the submission. If
+	# the script died here, it would die before it printed the submission id
+	# and before it fetched the log, which is exactly when a person needs
+	# both. So the run continues, and the receipt decides.
+	submit_status=0
 	xcrun notarytool submit "$path" \
 		--keychain-profile "$NOTARY_PROFILE" \
 		--wait \
-		--output-format json > "$json"
+		--output-format json > "$json" || submit_status=$?
 
-	id="$(plutil -extract id raw -o - "$json")"
-	status="$(plutil -extract status raw -o - "$json")"
+	# No receipt at all means the submission never reached Apple. There is no
+	# id to report and no log to fetch.
+	if [ ! -s "$json" ]; then
+		echo "notarytool wrote no receipt for $(basename "$path"), exit code $submit_status."
+		echo "The submission did not reach Apple. Check the network and the keychain profile."
+		exit 1
+	fi
+
+	id="$(plutil -extract id raw -o - "$json" 2>/dev/null || echo unknown)"
+	status="$(plutil -extract status raw -o - "$json" 2>/dev/null || echo unknown)"
 
 	echo "submission id: $id"
 	echo "status:        $status"
+	if [ "$submit_status" -ne 0 ]; then
+		echo "notarytool exit code: $submit_status"
+	fi
 
+	# The status field decides, not the exit code. Accepted with a non-zero
+	# exit code is still Accepted, and anything else stops the release.
 	if [ "$status" != "Accepted" ]; then
 		echo "Apple did not accept $(basename "$path"). The log follows."
-		xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" || true
+		if [ "$id" != "unknown" ]; then
+			xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" || true
+		else
+			echo "No submission id in the receipt, so there is no log to fetch."
+			cat "$json"
+		fi
 		exit 1
 	fi
 }
@@ -78,7 +102,9 @@ notarise() {
 if [ "$SKIP_CHECKS" != "1" ]; then
 	step "Verification suite"
 	# A release artefact must never be built from a tree whose checks fail.
-	swift run --package-path "$ROOT" minutes-checks | tail -1
+	# The full output is printed. A failed assertion names itself, and that
+	# name is the first thing a person needs.
+	swift run --package-path "$ROOT" minutes-checks
 fi
 
 step "Build and sign the app"
@@ -125,12 +151,40 @@ step "Prove it"
 # The signature still holds after the staple.
 codesign --verify --strict --deep --verbose=2 "$APP"
 codesign --verify --strict --verbose=2 "$DMG"
-# Gatekeeper answers for a downloaded image and for the app inside it.
+# Gatekeeper answers for a downloaded image.
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
-spctl --assess --type exec --verbose=4 "$APP"
 # The ticket is on the disk, so a Mac with no network can read it.
-xcrun stapler validate "$APP"
 xcrun stapler validate "$DMG"
+
+# The build directory copy of the app is not the copy anybody installs. Only
+# the copy inside the image is. A staple or a signature that did not survive
+# hdiutil would pass every check above and still fail on the far Mac, so the
+# image is mounted and the copy inside it is asked the same questions.
+step "Prove the app inside the image"
+MOUNT="$ROOT/build/dmg-mount"
+rm -rf "$MOUNT"
+mkdir -p "$MOUNT"
+# The mount is detached however this script ends, so a failed check never
+# leaves an image attached.
+detach_image() {
+	hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
+	rmdir "$MOUNT" 2>/dev/null || true
+}
+trap detach_image EXIT
+
+hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+INSTALLED="$MOUNT/Minutes.app"
+
+# The image carries the app and the link to /Applications, and nothing else.
+ls -1a "$MOUNT"
+codesign --verify --strict --deep --verbose=2 "$INSTALLED"
+spctl --assess --type exec --verbose=4 "$INSTALLED"
+xcrun stapler validate "$INSTALLED"
+echo "version inside the image: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist")"
+echo "architectures inside the image: $(lipo -archs "$INSTALLED/Contents/MacOS/minutes")"
+
+detach_image
+trap - EXIT
 
 step "The artefact"
 shasum -a 256 "$DMG"
