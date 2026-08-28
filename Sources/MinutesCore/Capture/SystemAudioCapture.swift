@@ -110,7 +110,11 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         lock.lock()
         let alreadyRecording = recording
         lock.unlock()
-        if alreadyRecording { return }
+        // Refused, not ignored. A silent return here says the second meeting
+        // is being recorded while the tap still holds the first meeting's
+        // writer and the first meeting's file, and the next stop hands that
+        // file to the second meeting.
+        if alreadyRecording { throw CaptureError.alreadyRecording }
 
         let writer = try TrackWriter(url: url)
 
@@ -156,6 +160,11 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         let writer = self.writer
         let url = self.outputURL
         self.source = nil
+        // The writer is cleared here as well. A rebuild that is still starting
+        // a tap on the work queue reads this field to decide whether it is
+        // allowed to feed anything, and a writer left in place tells it yes
+        // after the meeting has ended.
+        self.writer = nil
         self.recording = false
         lock.unlock()
 
@@ -271,9 +280,16 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
                 )
             }
         } catch {
-            append(
-                "The system audio tap could not be rebuilt: \(error.localizedDescription). The rest of this meeting is microphone only."
-            )
+            lock.lock()
+            let live = recording
+            lock.unlock()
+            // A rebuild that was refused because the meeting ended under it is
+            // not a fault to report. The meeting is over.
+            if live {
+                append(
+                    "The system audio tap could not be rebuilt: \(error.localizedDescription). The rest of this meeting is microphone only."
+                )
+            }
         }
     }
 
@@ -281,16 +297,28 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         let source = makeSource()
         lock.lock()
         let writer = self.writer
+        let live = recording
         lock.unlock()
-        guard let writer else { throw CaptureError.notRecording }
+        guard live, let writer else { throw CaptureError.notRecording }
 
         try source.start { buffer in
             writer.append(buffer)
         }
 
+        // A stop can land while the tap above is starting. The stop saw no
+        // source to tear down, so this is the only place that can tear the new
+        // one down, and it does. A tap owned by an object that believes it is
+        // not recording keeps a private aggregate device alive for the rest of
+        // the process, so it is made impossible here rather than unlikely.
         lock.lock()
-        self.source = source
+        let stillRecording = recording
+        if stillRecording { self.source = source }
         lock.unlock()
+
+        guard stillRecording else {
+            source.stop()
+            throw CaptureError.notRecording
+        }
     }
 
     private func startWatchdog() {

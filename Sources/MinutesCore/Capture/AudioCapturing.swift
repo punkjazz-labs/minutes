@@ -63,6 +63,7 @@ public enum CaptureError: Error, LocalizedError {
     case permissionDenied(String)
     case deviceFailure(String)
     case notRecording
+    case alreadyRecording
 
     public var errorDescription: String? {
         switch self {
@@ -70,6 +71,9 @@ public enum CaptureError: Error, LocalizedError {
         case .permissionDenied(let reason): return reason
         case .deviceFailure(let reason): return reason
         case .notRecording: return "Stop was asked for while nothing was recording."
+        case .alreadyRecording:
+            return
+                "Recording was asked for while this source was already recording. The recording that is running was left alone."
         }
     }
 }

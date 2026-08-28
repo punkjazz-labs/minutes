@@ -74,7 +74,9 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
         lock.lock()
         let alreadyRecording = recording
         lock.unlock()
-        if alreadyRecording { return }
+        // The same refusal the tap makes, for the same reason: a silent return
+        // starts a second meeting that keeps writing the first meeting's file.
+        if alreadyRecording { throw CaptureError.alreadyRecording }
 
         if case .denied = MicrophoneCapture.permissionState {
             throw CaptureError.permissionDenied(unavailableReason ?? "Microphone access was denied.")

@@ -72,6 +72,121 @@ private struct FakeTapFailure: Error, LocalizedError {
     var errorDescription: String? { "the fake tap was told to fail" }
 }
 
+/// A source that feeds nothing on its own and feeds exactly what the check asks
+/// for, whenever the check asks for it.
+///
+/// The fake above delivers one buffer at start, which cannot express a tap that
+/// carried real audio for a while and then died. This one can.
+final class ScriptedSystemAudioSource: SystemAudioSource, @unchecked Sendable {
+
+    let outputDeviceName = "a scripted output device"
+
+    private let lock = NSLock()
+    private var sink: ((AVAudioPCMBuffer) -> Void)?
+    private var starts = 0
+    private var stops = 0
+    /// Run by `start`, before the tap is handed back. This is how a check puts
+    /// a stop in the middle of a tap starting up.
+    var whileStarting: (() -> Void)?
+
+    var startCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return starts
+    }
+
+    var stopCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stops
+    }
+
+    func start(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) throws {
+        lock.lock()
+        starts += 1
+        sink = onBuffer
+        lock.unlock()
+        whileStarting?()
+    }
+
+    func stop() {
+        lock.lock()
+        stops += 1
+        lock.unlock()
+    }
+
+    /// Pushes one buffer of the awkward format a real tap delivers.
+    func feed(value: Float, seconds: Double) {
+        lock.lock()
+        let sink = self.sink
+        lock.unlock()
+        guard
+            let sink,
+            let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2),
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format, frameCapacity: AVAudioFrameCount(48_000 * seconds))
+        else { return }
+
+        buffer.frameLength = buffer.frameCapacity
+        for channel in 0..<Int(format.channelCount) {
+            guard let samples = buffer.floatChannelData?[channel] else { continue }
+            for frame in 0..<Int(buffer.frameLength) {
+                samples[frame] = value == 0 ? 0 : value
+            }
+        }
+        sink(buffer)
+    }
+}
+
+/// A source that refuses to close, so the checks can put a failed stop on one
+/// track and look at what happened to the other.
+final class RefusingCapture: AudioCapturing, @unchecked Sendable {
+
+    let track: AudioTrack
+    private(set) var stopCount = 0
+
+    init(track: AudioTrack) {
+        self.track = track
+    }
+
+    var isAvailable: Bool { true }
+    var unavailableReason: String? { nil }
+    var signal: SignalCheck { SignalCheck() }
+
+    func start(writingTo url: URL) throws {}
+
+    func stop() throws -> CaptureResult {
+        stopCount += 1
+        throw CaptureError.deviceFailure("the fake source was told not to close")
+    }
+}
+
+/// A source that closes cleanly and counts how often it was asked to.
+final class CountingCapture: AudioCapturing, @unchecked Sendable {
+
+    let track: AudioTrack
+    private let url: URL
+    private(set) var stopCount = 0
+
+    init(track: AudioTrack, url: URL) {
+        self.track = track
+        self.url = url
+    }
+
+    var isAvailable: Bool { true }
+    var unavailableReason: String? { nil }
+    var signal: SignalCheck { SignalCheck() }
+
+    func start(writingTo url: URL) throws {}
+
+    func stop() throws -> CaptureResult {
+        stopCount += 1
+        var signal = SignalCheck()
+        signal.observe([Float](repeating: 0.4, count: 16_000))
+        return CaptureResult(track: track, fileURL: url, duration: 1, signal: signal)
+    }
+}
+
 func systemAudioChecks(_ run: CheckRun) throws {
     run.section("System audio tap")
 
@@ -224,6 +339,90 @@ func systemAudioChecks(_ run: CheckRun) throws {
         } catch {
             run.expect(true, "stopping a tap that never ran throws")
         }
+    }
+
+    // A stop that fails on one track still stops the other. This is the worst
+    // failure the app can have: a tap that outlives Stop keeps recording what
+    // the Mac plays while the menu bar says nothing is being recorded.
+    do {
+        let refusing = RefusingCapture(track: .me)
+        let tap = CountingCapture(track: .others, url: scratch.appendingPathComponent("kept-going.wav"))
+
+        let outcome = MeetingStop.everything(microphone: refusing, systemAudio: tap)
+
+        run.equal(tap.stopCount, 1, "a microphone that will not close still stops the system audio tap")
+        run.expect(outcome.ownCapture == nil, "a track that would not close is not offered as a recording")
+        run.expect(
+            outcome.missingTracks.contains(.me), "the track that would not close is named as missing")
+        run.expect(
+            outcome.failures.contains { $0.contains("Stopping the recording failed") },
+            "the failed stop is said out loud rather than swallowed")
+
+        // And the other way round, so neither track can be the one that is
+        // skipped.
+        let microphone = CountingCapture(track: .me, url: scratch.appendingPathComponent("own-track.wav"))
+        let stubborn = RefusingCapture(track: .others)
+        let second = MeetingStop.everything(microphone: microphone, systemAudio: stubborn)
+
+        run.equal(microphone.stopCount, 1, "a tap that will not close still stops the microphone")
+        run.expect(second.ownCapture != nil, "the track that did close is still a recording")
+        run.expect(
+            second.missingTracks.contains(.others), "the tap that would not close is named as missing")
+    }
+
+    // Starting a source that is already recording is refused, not ignored. A
+    // silent return leaves the first meeting's writer and the first meeting's
+    // file in place, and the next stop hands that file to the second meeting.
+    do {
+        let first = scratch.appendingPathComponent("first-meeting.wav")
+        let second = scratch.appendingPathComponent("second-meeting.wav")
+        let capture = SystemAudioCapture(
+            watchdogInterval: 0,
+            watchesOutputDevice: false,
+            source: { FakeSystemAudioSource(value: 0.4, seconds: 0.2) })
+
+        try capture.start(writingTo: first)
+        do {
+            try capture.start(writingTo: second)
+            run.failed("starting a tap that is already recording must be refused")
+        } catch {
+            run.expect(true, "starting a tap that is already recording is refused")
+            run.expect(
+                error.localizedDescription.contains("already recording"),
+                "the refusal says the recording that is running was left alone")
+        }
+
+        let result = try capture.stop()
+        run.equal(
+            result.fileURL, first,
+            "one meeting's audio is never handed to the meeting that started after it")
+    }
+
+    // Stop landing while a rebuild is starting a tap. The rebuild has already
+    // let go of the old source, so nothing but the rebuild itself can tear the
+    // new one down.
+    do {
+        let url = scratch.appendingPathComponent("stop-during-rebuild.wav")
+        let source = ScriptedSystemAudioSource()
+        let capture = SystemAudioCapture(
+            watchdogInterval: 0,
+            watchesOutputDevice: false,
+            source: { source })
+
+        try capture.start(writingTo: url)
+        source.feed(value: 0.5, seconds: 0.5)
+
+        // The next tap to start finds the meeting already stopped under it.
+        source.whileStarting = { _ = try? capture.stop() }
+        capture.rebuildForOutputDeviceChange()
+        source.whileStarting = nil
+
+        run.equal(
+            source.stopCount, source.startCount,
+            "every tap that was started was also stopped, so no tap outlives the meeting")
+        run.equal(
+            capture.signal, SignalCheck(),
+            "stop clears the writer, so a rebuild that finishes late has nothing to feed")
     }
 
     // The shared conversion, since both tracks now depend on it.

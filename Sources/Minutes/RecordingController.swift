@@ -255,28 +255,25 @@ final class RecordingController: ObservableObject {
         guard isRecording else { return }
         stopTicker()
 
-        let captured: CaptureResult
-        do {
-            captured = try microphone.stop()
-        } catch {
-            append("Stopping the recording failed: \(error.localizedDescription)")
+        // Both sources are stopped before anything here can return. A tap left
+        // running by a failed stop records what this Mac plays with the record
+        // dot already off, which is the one thing the menu bar promises cannot
+        // happen.
+        let stopped = MeetingStop.everything(
+            microphone: microphone,
+            systemAudio: systemAudioRunning ? systemAudio : nil)
+        systemAudioRunning = false
+        for line in stopped.failures { append(line) }
+
+        // Without the owner's own track there is no meeting to write up. The
+        // tap is already stopped by the line above, whatever happened here.
+        guard stopped.ownCapture != nil else {
             phase = .idle
             return
         }
 
-        var captures = [captured]
-        var missingTracks: [AudioTrack] = []
-        if systemAudioRunning {
-            do {
-                captures.append(try systemAudio.stop())
-            } catch {
-                missingTracks.append(.others)
-                append("The system audio track could not be closed: \(error.localizedDescription)")
-            }
-        } else {
-            missingTracks.append(.others)
-        }
-        systemAudioRunning = false
+        let captures = stopped.captures
+        let missingTracks = stopped.missingTracks
 
         // Every track is summarised by the pipeline, in the order it processes
         // them, so nothing is reported twice or reported for one track only.
