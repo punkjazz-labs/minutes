@@ -30,9 +30,10 @@ struct MinutesApp: App {
         }
         .defaultSize(width: 1_020, height: 620)
 
-        Settings {
+        Window("Settings", id: "settings") {
             SettingsView(controller: controller)
         }
+        .defaultSize(width: 480, height: 640)
     }
 }
 

@@ -4,9 +4,41 @@ A local meeting notes app for macOS. The recording and the transcript are made
 on your Mac. The transcript is sent to a model endpoint you choose to write the
 notes. Nothing is sent to any other service.
 
-This is v0.3. It records both sides of the meeting, it ships as a signed and
-notarised disk image, and this file says plainly which parts work, which are
-stubs, and which have been measured on real hardware rather than assumed.
+This is the v0.3.1 source update. The earlier v0.3 release was distributed as a
+signed and notarised disk image; v0.3.1 is a source-tree update on top of that
+work and makes no signing or notarisation claim of its own here. This file says
+plainly which parts work, which are stubs, and which have been measured on real
+hardware rather than assumed.
+
+### What v0.3.1 adds
+
+- An explicit Settings window for endpoint, model profile, API key, storage
+  folder, and transcription model choices.
+- Permission recovery: a microphone permission grant after a denial clears the
+  related error instead of requiring a reset of the app.
+- Settings are validated and saved explicitly, and the saved endpoint and model
+  must be rechecked before a connection is assumed ready.
+- Endpoint, model and transcriber are captured when recording starts and stay
+  stable for the write-up.
+- Saved pending notes and failed write-ups have distinct visible outcomes rather
+  than being silently swallowed.
+- Input level meters are labelled, so microphone and system-audio levels are
+  distinguishable at a glance.
+- A single click on a library entry opens that meeting's title.
+- The app identifies itself as minutes and sends meeting-notes-enhance and
+  meeting-ask operations through profile/general. The operation mapping is
+  maintained in the gateway model registry.
+- Capture, transcription, and storage run on this Mac and do not require Basement.
+
+A privately prepared bundle may supply `Resources/MinutesDefaults.plist` with
+`notesBaseURL` and `notesModel` (a profile alias) before final signing. Saved
+user preferences override it, and the generic defaults remain loopback. Public
+source defaults contain no machine-specific addresses.
+
+Run the full test suite with `make checks`. After installing the GUI on a
+destination Mac, the microphone permission prompt and physical recording must
+still be verified by hand; this source update does not itself claim Developer ID
+signing or notarisation.
 
 ## What works in v0.3
 

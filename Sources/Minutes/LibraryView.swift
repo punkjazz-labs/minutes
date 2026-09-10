@@ -177,9 +177,15 @@ private struct MeetingRow: View {
                                 .fill(Ink.bg)
                                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Ink.lineStrong)))
                 } else {
-                    Text(meeting.title)
-                        .font(.ui(Size.row, weight: .medium))
-                        .foregroundStyle(Ink.ink)
+                    Button {
+                        open()
+                    } label: {
+                        Text(meeting.title)
+                            .font(.ui(Size.row, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(meeting.title)")
                 }
                 if let snippet = hit.snippet {
                     snippetText(snippet)
@@ -193,7 +199,7 @@ private struct MeetingRow: View {
                 .monospacedDigit()
                 .frame(width: Column.length, alignment: .trailing)
 
-            Text(meeting.notesState.label)
+            Text(meeting.notesState == .pending ? "Notes pending" : meeting.notesState.label)
                 .font(.ui(Size.tiny))
                 .foregroundStyle(stateColor)
                 .frame(width: Column.state, alignment: .leading)

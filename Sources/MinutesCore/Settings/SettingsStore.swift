@@ -47,7 +47,9 @@ public final class UserDefaultsSettingsStore: SettingsStoring, @unchecked Sendab
             let data = defaults.data(forKey: key),
             let decoded = try? JSONDecoder().decode(AppSettings.self, from: data)
         else {
-            return AppSettings()
+            // Nothing persisted yet: fall back to any defaults bundled with a
+            // prepared build. Saved settings, once they exist, always win.
+            return AppSettings.bundledDefaults()
         }
         return decoded
     }

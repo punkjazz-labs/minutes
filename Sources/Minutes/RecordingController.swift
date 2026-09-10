@@ -20,6 +20,12 @@ final class RecordingController: ObservableObject {
     @Published private(set) var lastMeetingURL: URL?
     @Published private(set) var modelReady: Bool
     @Published private(set) var modelDownloadProgress: Double?
+    @Published private(set) var microphonePermission: MicrophoneCapture.PermissionState
+    @Published private(set) var userError: String?
+    @Published private(set) var completionNotice: String?
+    @Published private(set) var systemLevel: Float = 0
+    @Published private(set) var isTestingEndpoint = false
+    @Published private(set) var settingsMessage: String?
 
     /// What the owner typed for the meeting being recorded now, or for the one
     /// about to be recorded. Cleared when a meeting is written up and never
@@ -39,6 +45,12 @@ final class RecordingController: ObservableObject {
     private var recordingURL: URL?
     private var systemAudioRunning = false
     private var systemNotesShown = 0
+    /// Settings, transcriber, and notes client captured before the first await
+    /// of a start, so the pipeline runs against what the meeting began with.
+    private var sessionSettings: AppSettings?
+    private var sessionTranscriber: FluidAudioTranscriber?
+    private var sessionNotes: OpenAICompatibleNotesClient?
+    private var activeDownloadID: UUID?
 
     private let firstRunKey = "minutes.firstRunNoticeAcknowledged"
 
@@ -53,6 +65,39 @@ final class RecordingController: ObservableObject {
         self.transcriber = FluidAudioTranscriber(model: loaded.asrModel)
         self.modelReady = FluidAudioTranscriber(model: loaded.asrModel).modelsAreReady()
         self.apiKeyField = keyStore.readKey() ?? ""
+        self.microphonePermission = MicrophoneCapture.permissionState
+    }
+
+    // MARK: - Permissions and settings locking
+
+    func refreshPermissions() {
+        let oldPermission = microphonePermission
+        microphonePermission = MicrophoneCapture.permissionState
+        if microphonePermission == .granted,
+            oldPermission == .denied || oldPermission == .restricted,
+            let error = userError,
+            error.lowercased().contains("microphone")
+        {
+            userError = nil
+        }
+        objectWillChange.send()
+    }
+
+    func openMicrophoneSettings() {
+        if let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    var microphoneBlocked: Bool {
+        microphonePermission == .denied || microphonePermission == .restricted
+    }
+
+    var settingsLocked: Bool {
+        state.phase == .starting || state.isRecording || state.phase.isBusy
+            || modelDownloadProgress != nil
     }
 
     // MARK: - Facts shown on screen
@@ -68,10 +113,12 @@ final class RecordingController: ObservableObject {
         if let reason = systemAudio.unavailableReason { return reason }
         guard isRecording else { return SystemAudioCapture.permissionNotice }
         guard systemAudioRunning else {
-            return "The system audio tap is not running, so only your side of this meeting is being recorded."
+            return
+                "The system audio tap is not running, so only your side of this meeting is being recorded."
         }
         if systemAudioSilence {
-            return "Nothing has been heard from the other side yet. That is either a quiet meeting or a permission macOS never granted, and minutes cannot tell which until something is heard."
+            return
+                "Nothing has been heard from the other side yet. That is either a quiet meeting or a permission macOS never granted, and minutes cannot tell which until something is heard."
         }
         return nil
     }
@@ -98,7 +145,14 @@ final class RecordingController: ObservableObject {
     var statusLine: String {
         switch phase {
         case .idle:
-            return modelReady ? "Ready." : "Ready, but the speech model is not downloaded yet."
+            if microphoneBlocked {
+                return
+                    "The microphone is blocked. Allow minutes in System Settings > Privacy & Security > Microphone."
+            }
+            if let error = userError { return error }
+            if !modelReady { return "Download the speech model in Settings." }
+            if let notice = completionNotice { return notice }
+            return "Ready."
         case .starting:
             return "Opening the microphone and the system audio tap."
         case .recording:
@@ -108,6 +162,8 @@ final class RecordingController: ObservableObject {
         case .working(let what):
             return what
         case .finished:
+            if let error = userError { return error }
+            if let notice = completionNotice { return notice }
             return "Done."
         }
     }
@@ -115,9 +171,34 @@ final class RecordingController: ObservableObject {
     // MARK: - Settings
 
     func saveSettings() {
-        settingsStore.save(settings)
-        transcriber = FluidAudioTranscriber(model: settings.asrModel)
-        modelReady = transcriber.modelsAreReady()
+        guard !settingsLocked else {
+            settingsMessage =
+                "Settings cannot be saved while a meeting is starting or recording, while work is running, or while a model downloads."
+            return
+        }
+        var candidate = settings
+        candidate.notesBaseURL = candidate.notesBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        candidate.notesModel = candidate.notesModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        candidate.notesFolderPath = candidate.notesFolderPath.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        let problems = candidate.problems
+        guard problems.isEmpty else {
+            settingsMessage = "Settings were not saved: " + problems.joined(separator: " ")
+            return
+        }
+        let previousModel = settingsStore.load().asrModel
+        settings = candidate
+        settingsStore.save(candidate)
+        // The transcriber is only rebuilt when the chosen model changed; a
+        // rebuild would otherwise drop a loaded model for nothing.
+        if candidate.asrModel != previousModel {
+            transcriber = FluidAudioTranscriber(model: candidate.asrModel)
+            modelReady = transcriber.modelsAreReady()
+        }
+        endpointStatus = nil
+        if userError == "Save valid settings in Settings before recording." { userError = nil }
+        settingsMessage = "Settings saved."
+        objectWillChange.send()
     }
 
     func saveAPIKey() {
@@ -149,43 +230,74 @@ final class RecordingController: ObservableObject {
 
     func openNotesFolder() {
         let url = lastMeetingURL ?? settings.notesFolderURL
-        try? FileManager.default.createDirectory(at: settings.notesFolderURL, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: settings.notesFolderURL, withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
     }
 
     func testEndpoint() {
-        endpointStatus = "Asking \(settings.notesBaseURL) for its models."
+        guard !isTestingEndpoint else { return }
+        let problems = settings.problems
+        guard problems.isEmpty else {
+            settingsMessage =
+                "Fix the settings before testing the endpoint: " + problems.joined(separator: " ")
+            return
+        }
         let client = notesClient()
         let wanted = settings.notesModel
+        let baseURL = settings.notesBaseURL
+        isTestingEndpoint = true
+        endpointStatus = "Asking \(baseURL) for its models."
         Task { @MainActor in
+            defer { isTestingEndpoint = false }
             do {
                 let models = try await client.probeModels()
+                // The result only stands for the settings it was asked about.
+                guard settings.notesBaseURL == baseURL, settings.notesModel == wanted else { return }
                 if models.contains(wanted) {
                     endpointStatus = "The endpoint answered and offers \(wanted)."
                 } else {
-                    endpointStatus = "The endpoint answered with \(models.count) models, but not \(wanted)."
+                    endpointStatus =
+                        "The endpoint answered with \(models.count) models, but \(wanted) is not among them. The endpoint is reachable; this says nothing about whether generation works."
                 }
             } catch {
+                guard settings.notesBaseURL == baseURL, settings.notesModel == wanted else { return }
                 endpointStatus = error.localizedDescription
             }
         }
     }
 
     func downloadModel() {
-        modelDownloadProgress = 0
+        guard !settingsLocked, modelDownloadProgress == nil else { return }
+        saveSettings()
+        guard settings == settingsStore.load(), settings.problems.isEmpty else { return }
         let choice = settings.asrModel
+        let downloadID = UUID()
+        activeDownloadID = downloadID
+        modelDownloadProgress = 0
         Task { @MainActor in
             do {
                 _ = try await FluidAudioTranscriber.downloadModels(choice) { fraction in
-                    Task { @MainActor in self.modelDownloadProgress = fraction }
+                    Task { @MainActor in
+                        guard self.activeDownloadID == downloadID else { return }
+                        self.modelDownloadProgress = fraction
+                    }
                 }
+                activeDownloadID = nil
                 modelDownloadProgress = nil
-                transcriber = FluidAudioTranscriber(model: choice)
-                modelReady = transcriber.modelsAreReady()
+                // Only replace the transcriber if the owner still wants the
+                // model that finished downloading.
+                if settings.asrModel == choice {
+                    transcriber = FluidAudioTranscriber(model: choice)
+                    modelReady = transcriber.modelsAreReady()
+                    userError = nil
+                }
                 append("Speech model downloaded.")
             } catch {
+                activeDownloadID = nil
                 modelDownloadProgress = nil
-                append("The speech model did not download: \(error.localizedDescription)")
+                userError = "The speech model did not download: \(error.localizedDescription)"
+                append(userError!)
             }
         }
     }
@@ -201,6 +313,22 @@ final class RecordingController: ObservableObject {
     }
 
     func start() {
+        // Setup gates run before the start slot is claimed, so no permission
+        // prompt or state change happens while the meeting cannot begin.
+        guard phase == .idle || phase == .finished else { return }
+        if modelDownloadProgress != nil {
+            userError = "Wait for the speech model download to finish."
+            return
+        }
+        guard settings.problems.isEmpty, settings == settingsStore.load() else {
+            userError = "Save valid settings in Settings before recording."
+            return
+        }
+        modelReady = transcriber.modelsAreReady()
+        if !modelReady {
+            userError = "Download the speech model in Settings before recording."
+            return
+        }
         // The slot is taken here, synchronously, in the same run of main actor
         // code that decided to take it. Opening a device is asynchronous, so a
         // phase written after the devices are open would leave a gap in which a
@@ -209,6 +337,14 @@ final class RecordingController: ObservableObject {
         // separated that way: it does not open anything and there is nothing
         // inside it to await.
         guard state.claimStart() else { return }
+        // Snapshot everything the meeting will use before any await, so a
+        // settings change mid-meeting cannot swap the engine under it.
+        sessionSettings = settings
+        sessionTranscriber = transcriber
+        sessionNotes = notesClient()
+        userError = nil
+        completionNotice = nil
+        systemLevel = 0
         log = []
         capturedSilence = false
         systemAudioSilence = false
@@ -226,6 +362,21 @@ final class RecordingController: ObservableObject {
             if MicrophoneCapture.permissionState == .undetermined {
                 _ = await MicrophoneCapture.requestPermission()
             }
+            refreshPermissions()
+            // A recording that predictably cannot be transcribed is not
+            // started, and the reason is said rather than left silent.
+            if microphoneBlocked {
+                userError =
+                    "The microphone is blocked. Allow minutes in System Settings > Privacy & Security > Microphone, then try again."
+                state.startFailed()
+                return
+            }
+            guard modelReady else {
+                userError =
+                    "The speech model is not downloaded yet. Open settings, download it, then record."
+                state.startFailed()
+                return
+            }
             do {
                 try microphone.start(writingTo: url)
                 recordingURL = url
@@ -234,7 +385,8 @@ final class RecordingController: ObservableObject {
                 append("Recording started.")
                 startTicker()
             } catch {
-                append("Recording did not start: \(error.localizedDescription)")
+                userError = "Recording did not start: \(error.localizedDescription)"
+                append(userError!)
                 state.startFailed()
                 return
             }
@@ -245,7 +397,9 @@ final class RecordingController: ObservableObject {
             do {
                 try systemAudio.start(writingTo: systemURL)
                 systemAudioRunning = true
-                append("Recording what this Mac plays as well, so the other side of the meeting is on its own track.")
+                append(
+                    "Recording what this Mac plays as well, so the other side of the meeting is on its own track."
+                )
             } catch {
                 systemAudioRunning = false
                 append("System audio did not start: \(error.localizedDescription)")
@@ -273,6 +427,8 @@ final class RecordingController: ObservableObject {
         // Without the owner's own track there is no meeting to write up. The
         // tap is already stopped by the line above, whatever happened here.
         guard stopped.ownCapture != nil else {
+            userError =
+                "No microphone capture was recorded, so there is no meeting to write up. Your draft is kept."
             state.abandon()
             return
         }
@@ -285,21 +441,30 @@ final class RecordingController: ObservableObject {
         let meetingTitle = draft.meetingTitle(or: defaultTitle())
         let started = startedAt ?? Date()
         let ownerNotes = draft.bullets
-        let currentSettings = settings
+        let pipelineSettings = sessionSettings ?? settings
+        let pipelineTranscriber = sessionTranscriber ?? transcriber
+        let pipelineNotes = sessionNotes ?? notesClient()
 
         state.working("Transcribing on this Mac.")
 
         let pipeline = MeetingPipeline(
-            settings: currentSettings,
-            store: MeetingStore(settings: currentSettings),
-            transcriber: transcriber,
-            notes: notesClient()
+            settings: pipelineSettings,
+            store: MeetingStore(settings: pipelineSettings),
+            transcriber: pipelineTranscriber,
+            notes: pipelineNotes
         )
+        // The pipeline now holds the session's settings, transcriber, and
+        // client in its own captured locals, so the controller's snapshots
+        // can go. They are cleared here and not earlier, because they are
+        // read up to this point.
+        sessionSettings = nil
+        sessionTranscriber = nil
+        sessionNotes = nil
 
         Task { @MainActor in
             do {
                 try FileManager.default.createDirectory(
-                    at: currentSettings.notesFolderURL, withIntermediateDirectories: true)
+                    at: pipelineSettings.notesFolderURL, withIntermediateDirectories: true)
 
                 let outcome = try await pipeline.run(
                     title: meetingTitle,
@@ -311,6 +476,12 @@ final class RecordingController: ObservableObject {
                     Task { @MainActor in self.append(message) }
                 }
                 lastMeetingURL = outcome.directory.url
+                if outcome.notesArePending {
+                    completionNotice =
+                        "Meeting saved. The notes are still pending: \(outcome.notesPendingReason ?? "the endpoint did not answer")."
+                } else {
+                    completionNotice = "Meeting saved. The notes are ready."
+                }
                 // The title and the bullets are in that meeting's folder now,
                 // so they do not carry into the next meeting. A write-up that
                 // failed keeps them, because then the folder does not have
@@ -318,8 +489,11 @@ final class RecordingController: ObservableObject {
                 draft.clearAfterWriteUp()
                 state.finish()
             } catch {
-                append("The meeting could not be written up: \(error.localizedDescription)")
-                state.finish()
+                userError = "The meeting could not be written up: \(error.localizedDescription)"
+                append(userError!)
+                // The thrown failure means the folder may not hold the draft,
+                // so it is preserved here for the next attempt.
+                state.abandon()
             }
         }
     }
@@ -358,10 +532,12 @@ final class RecordingController: ObservableObject {
         level = signal.meterLevel
         // A tap or a device that has stopped feeding looks exactly like a
         // quiet room, so the app measures instead of assuming.
-        capturedSilence = signal.isAllZero || signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: 10)
+        capturedSilence =
+            signal.isAllZero || signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: 10)
 
         if systemAudioRunning {
             let systemSignal = systemAudio.signal
+            systemLevel = systemSignal.meterLevel
             systemAudioSilence = systemSignal.isAllZero
             // Anything the tap had to do, such as rebuilding itself, is said
             // once and in the same activity log as everything else.

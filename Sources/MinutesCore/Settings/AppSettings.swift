@@ -42,7 +42,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public static let defaultNotesModel = "profile/general"
 
     public static var defaultNotesFolderPath: String {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        let documents =
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
         return documents.appendingPathComponent("minutes", isDirectory: true).path
     }
@@ -80,11 +81,25 @@ public struct AppSettings: Codable, Equatable, Sendable {
         return copy
     }
 
+    /// True when the trimmed value is a strict http/https URL with a host
+    /// and no embedded credentials.
+    private static func isValidEndpointURL(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let url = URL(string: trimmed),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            let host = url.host, !host.isEmpty,
+            url.user == nil, url.password == nil
+        else { return false }
+        return true
+    }
+
     /// Reasons the settings cannot be used, in plain language. Empty means usable.
     public var problems: [String] {
         var found: [String] = []
-        if URL(string: notesBaseURL) == nil || !notesBaseURL.lowercased().hasPrefix("http") {
-            found.append("The notes endpoint is not an http or https URL.")
+        if !AppSettings.isValidEndpointURL(notesBaseURL) {
+            found.append("The notes endpoint is not an http or https URL with a host.")
         }
         if notesModel.trimmingCharacters(in: .whitespaces).isEmpty {
             found.append("No model name is set for notes.")
@@ -93,5 +108,30 @@ public struct AppSettings: Codable, Equatable, Sendable {
             found.append("No notes folder is set.")
         }
         return found
+    }
+
+    /// Overrides baked into a prepared app bundle. The public source tree
+    /// never contains a private address: the prepared build ships its own
+    /// `MinutesDefaults.plist` in resources with `notesBaseURL` and
+    /// `notesModel`. Values are used only when they validate, and saved
+    /// preferences always win over these.
+    public static func bundledDefaults(bundle: Bundle = .main) -> AppSettings {
+        guard
+            let url = bundle.url(forResource: "MinutesDefaults", withExtension: "plist"),
+            let data = try? Data(contentsOf: url),
+            let plist = try? PropertyListDecoder().decode(BundledDefaults.self, from: data)
+        else { return AppSettings() }
+        let baseURL = plist.notesBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = plist.notesModel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard isValidEndpointURL(baseURL), model.hasPrefix("profile/"), model.count > "profile/".count
+        else { return AppSettings() }
+        let settings = AppSettings(notesBaseURL: baseURL, notesModel: model)
+        guard settings.problems.isEmpty else { return AppSettings() }
+        return settings
+    }
+
+    private struct BundledDefaults: Decodable {
+        var notesBaseURL: String?
+        var notesModel: String?
     }
 }

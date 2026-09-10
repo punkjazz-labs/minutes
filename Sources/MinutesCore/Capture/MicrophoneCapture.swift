@@ -45,7 +45,7 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
 
     // MARK: - Permission
 
-    public enum PermissionState: Sendable {
+    public enum PermissionState: Equatable, Sendable {
         case undetermined
         case granted
         case denied
@@ -78,7 +78,8 @@ public final class MicrophoneCapture: AudioCapturing, @unchecked Sendable {
         // starts a second meeting that keeps writing the first meeting's file.
         if alreadyRecording { throw CaptureError.alreadyRecording }
 
-        if case .denied = MicrophoneCapture.permissionState {
+        let state = MicrophoneCapture.permissionState
+        if state == .denied || state == .restricted {
             throw CaptureError.permissionDenied(unavailableReason ?? "Microphone access was denied.")
         }
 
