@@ -104,7 +104,7 @@ struct MeetingDetailView: View {
                     .foregroundStyle(Ink.fail)
                     .lineLimit(2)
             }
-            OutlineButton(title: "Write notes again", enabled: !model.isRewriting) {
+            OutlineButton(title: model.isRewriting ? "Writing…" : "Generate notes", enabled: !model.isRewriting) {
                 model.rewriteNotes()
             }
         }

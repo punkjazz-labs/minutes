@@ -10,37 +10,22 @@ struct SettingsView: View {
                 TextField("Endpoint", text: $controller.settings.notesBaseURL)
                     .disabled(controller.settingsLocked)
                     .onSubmit { controller.saveSettings() }
-                Text(
-                    "Use your shared model gateway over Tailscale, or enter another OpenAI-compatible endpoint."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
                 TextField("Model", text: $controller.settings.notesModel)
                     .disabled(controller.settingsLocked)
                     .onSubmit { controller.saveSettings() }
-                Text(
-                    "A profile alias such as profile/general, so the app does not depend on which model is behind it."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
-                SecureField("API key", text: $controller.apiKeyField)
+                SecureField("API key (optional)", text: $controller.apiKeyField)
                     .disabled(controller.settingsLocked)
                 HStack {
-                    Button("Save key to keychain") { controller.saveAPIKey() }
+                    Button("Save key") { controller.saveAPIKey() }
                         .disabled(controller.settingsLocked)
-                    Button("Test endpoint") { controller.testEndpoint() }
+                    Button("Test connection") { controller.testEndpoint() }
                         .disabled(controller.settingsLocked || controller.isTestingEndpoint)
                     if controller.isTestingEndpoint {
                         ProgressView().controlSize(.small)
                     }
                 }
-                Text(
-                    "Leave the key empty for a local gateway that does not check it. minutes then sends a documented non-secret placeholder."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
                 if let status = controller.endpointStatus {
                     Text(status).font(.caption).foregroundStyle(.secondary)
@@ -51,7 +36,8 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Button("Save settings") { controller.saveSettings() }
+                    Button("Save") { controller.saveSettings() }
+                        .buttonStyle(.borderedProminent)
                         .disabled(controller.settingsLocked || !controller.settings.problems.isEmpty)
                     if controller.settingsLocked {
                         ProgressView().controlSize(.small)
@@ -65,26 +51,20 @@ struct SettingsView: View {
             Section("Microphone") {
                 switch controller.microphonePermission {
                 case .granted:
-                    Text("Microphone access is allowed.").font(.caption).foregroundStyle(.secondary)
+                    Text("Allowed").font(.caption).foregroundStyle(.secondary)
                 case .undetermined:
-                    Text("macOS will ask when you record.").font(.caption).foregroundStyle(.secondary)
+                    Text("Not requested").font(.caption).foregroundStyle(.secondary)
+                case .denied, .restricted:
+                    Text("Access blocked").font(.caption).foregroundStyle(.secondary)
                 default:
                     EmptyView()
                 }
-                if let notice = controller.microphoneNotice {
-                    Text(notice).font(.caption).foregroundStyle(.orange)
-                }
                 if controller.microphoneBlocked {
                     HStack {
-                        Button("Open Microphone Settings") { controller.openMicrophoneSettings() }
-                        Button("Recheck permission") { controller.refreshPermissions() }
+                        Button("Open settings") { controller.openMicrophoneSettings() }
+                        Button("Recheck") { controller.refreshPermissions() }
                     }
                 }
-                Text(
-                    "Microphone access records your voice. Transcription runs on this Mac; notes use the configured model profile."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             }
 
             Section("Transcription") {
@@ -98,19 +78,12 @@ struct SettingsView: View {
 
                 if let progress = controller.modelDownloadProgress {
                     ProgressView(value: progress)
-                    Text("Downloading the speech model.").font(.caption2).foregroundStyle(.secondary)
+                    Text("Downloading…").font(.caption2).foregroundStyle(.secondary)
                 } else if controller.modelReady {
-                    Text("The model is on this Mac. Transcription runs offline.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text("Ready").font(.caption2).foregroundStyle(.secondary)
                 } else {
-                    Button("Download the speech model") { controller.downloadModel() }
+                    Button("Download model") { controller.downloadModel() }
                         .disabled(controller.settingsLocked)
-                    Text(
-                        "The model is not on this Mac yet. Downloading fetches a few hundred megabytes once from Hugging Face."
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -128,34 +101,21 @@ struct SettingsView: View {
                     Text(warning).font(.caption).foregroundStyle(.orange)
                 }
                 Toggle(
-                    "Keep the audio after transcription",
+                    "Keep audio",
                     isOn: $controller.settings.keepAudioAfterTranscription
                 )
                 .disabled(controller.settingsLocked)
                 .onChange(of: controller.settings.keepAudioAfterTranscription) { _ in
                     controller.saveSettings()
                 }
-                Text(
-                    "Off means the recording is deleted once the transcript exists. The transcript is what remains."
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-
-            Section("What this build does") {
-                Text(
-                    "Both sides are recorded: your microphone, and what this Mac plays, which is the other people in the meeting. The second one is listened to on its way out, so you keep hearing the meeting normally."
-                )
-                .font(.caption)
-                Text(SystemAudioCapture.permissionNotice)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(controller.privacyClaim)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 620)
+        .scrollContentBackground(.hidden)
+        .background(Ink.surface)
+        .environment(\.colorScheme, .dark)
+        .preferredColorScheme(.dark)
+        .tint(Ink.accentDeep)
+        .frame(width: 480, height: 550)
     }
 }

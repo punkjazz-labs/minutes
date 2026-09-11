@@ -8,7 +8,7 @@ struct MenuView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 20) {
                     header
 
                     if controller.firstRunNoticeNeeded {
@@ -17,221 +17,284 @@ struct MenuView: View {
 
                     recordingRow
 
-                    if let notice = controller.systemAudioNotice {
-                        // Plain before a meeting, because it is how the permission
-                        // works. A warning during one, because then it is a fact about
-                        // this recording.
-                        Notice(text: notice, tone: controller.isRecording ? .warning : .plain)
-                    }
-                    if let error = controller.userError {
-                        Notice(text: error, tone: .warning)
-                    }
-                    if let completion = controller.completionNotice {
-                        Notice(text: completion, tone: .plain)
+                    if controller.isRecording, controller.systemAudioNotice != nil {
+                        Notice(text: "No system audio detected", tone: .warning)
                     }
                     if !controller.modelReady {
-                        Notice(
-                            text: "The speech model is not downloaded yet.",
-                            tone: .warning)
-                        Button("Open Settings") {
+                        Button {
                             NSApp.activate(ignoringOtherApps: true)
                             openWindow(id: "settings")
+                        } label: {
+                            Text("Open Settings")
+                                .font(.ui(Size.small, weight: .medium))
+                                .foregroundStyle(Ink.accentDeep)
                         }
-                        .controlSize(.small)
+                        .buttonStyle(.plain)
                     }
                     if controller.microphoneBlocked {
-                        VStack(alignment: .leading, spacing: 6) {
-                            if let notice = controller.microphoneNotice {
-                                Notice(text: notice, tone: .warning)
+                        HStack(spacing: 12) {
+                            Button { controller.openMicrophoneSettings() } label: {
+                                Text("Open Microphone Settings")
+                                    .font(.ui(Size.small, weight: .medium))
+                                    .foregroundStyle(Ink.accentDeep)
                             }
-                            HStack {
-                                Button("Open Microphone Settings") { controller.openMicrophoneSettings() }
-                                    .controlSize(.small)
-                                Button("Recheck permission") { controller.refreshPermissions() }
-                                    .controlSize(.small)
+                            .buttonStyle(.plain)
+                            Button { controller.refreshPermissions() } label: {
+                                Text("Recheck permission")
+                                    .font(.ui(Size.small, weight: .medium))
+                                    .foregroundStyle(Ink.muted)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
 
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Notes you type during the meeting")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $controller.draft.bullets)
-                            .font(.system(size: 12))
-                            .disabled(controller.phase == .starting || controller.phase.isBusy)
-                            .frame(height: 96)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                        Text("These bullets are the prompt. They are kept word for word in notes.md.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                    notesSection
 
                     if !controller.log.isEmpty {
-                        Divider()
-                        activity
+                        detailsSection
                     }
-
                 }
-                .padding(14)
+                .padding(20)
             }
-            Divider()
+            .scrollContentBackground(.hidden)
+
+            HLine()
             footer
-                .padding(14)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
         }
-        .frame(width: 400, height: 640)
+        .frame(width: 400, height: 500)
+        .background(Ink.surface)
+        .foregroundStyle(Ink.ink)
+        .preferredColorScheme(.dark)
         .onAppear {
             controller.refreshPermissions()
             if controller.endpointStatus == nil {
                 controller.testEndpoint()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
             controller.refreshPermissions()
         }
     }
 
+    // MARK: - Header
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("minutes")
-                    .font(.headline)
-                Spacer()
-                Text("v\(MinutesBuild.version)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Image(systemName: "waveform")
+                .font(.ui(13, weight: .medium))
+                .foregroundStyle(Ink.accentDeep)
+            Text("Minutes")
+                .font(.ui(15, weight: .semibold))
+                .foregroundStyle(Ink.ink)
+            Spacer()
+            if controller.isRecording {
+                Text(Timecode.string(from: controller.elapsed))
+                    .font(.mono(Size.small))
+                    .foregroundStyle(Ink.muted)
             }
-            Text(controller.privacyClaim)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    // MARK: - First run
 
     private var firstRunNotice: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(PrivacyClaim.firstRunNotice)
-                .font(.caption)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Audio is transcribed on this Mac. Text is sent to your model gateway for notes.")
+                .font(.ui(Size.small))
+                .foregroundStyle(Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("I understand") { controller.acknowledgeFirstRunNotice() }
-                .controlSize(.small)
+            Button {
+                controller.acknowledgeFirstRunNotice()
+            } label: {
+                Text("Continue")
+                    .font(.ui(Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Ink.surface2)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.lineStrong)))
+            }
+            .buttonStyle(.plain)
         }
-        .padding(8)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Ink.panel)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.line)))
     }
 
+    // MARK: - Recording
+
     private var recordingRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("Meeting title", text: $controller.draft.title)
-                .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("Untitled meeting", text: $controller.draft.title)
+                .textFieldStyle(.plain)
+                .font(.ui(19, weight: .semibold))
+                .foregroundStyle(Ink.ink)
                 .disabled(
-                    controller.phase == .starting || controller.isRecording || controller.phase.isBusy)
+                    controller.phase == .starting || controller.isRecording
+                        || controller.phase.isBusy)
 
-            HStack(spacing: 10) {
-                Button(controller.isRecording ? "Stop and write up" : "Record") {
-                    controller.toggleRecording()
+            Button {
+                controller.toggleRecording()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(
+                        systemName: controller.isRecording
+                            ? "stop.fill" : "circle.fill"
+                    )
+                    .font(.ui(12))
+                    Text(controller.isRecording ? "Stop" : "Record")
+                        .font(.ui(14, weight: .semibold))
                 }
-                .keyboardShortcut("r")
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    !controller.isRecording && (controller.phase == .starting || controller.phase.isBusy))
+                .foregroundStyle(Ink.accentInk)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Ink.accent))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("r")
+            .disabled(
+                !controller.isRecording
+                    && (controller.phase == .starting || controller.phase.isBusy))
+            .opacity(
+                !controller.isRecording
+                    && (controller.phase == .starting || controller.phase.isBusy)
+                    ? 0.45 : 1)
 
-                if controller.isRecording {
-                    Circle()
-                        .fill(controller.capturedSilence ? Color.orange : Color.red)
-                        .frame(width: 10, height: 10)
-                    Text(Timecode.string(from: controller.elapsed))
-                        .font(.system(.body, design: .monospaced))
-                }
-                Spacer()
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(controller.isRecording ? (controller.capturedSilence ? Ink.warn : Color.red) : Ink.faint)
+                    .frame(width: 8, height: 8)
+                Text(controller.statusLine)
+                    .font(.ui(Size.small))
+                    .foregroundStyle(controller.capturedSilence ? Ink.warn : Ink.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if controller.isRecording {
-                HStack(spacing: 6) {
-                    Text("Mic")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .leading)
-                    LevelMeter(level: controller.level, active: true)
-                }
-                HStack(spacing: 6) {
-                    Text("System")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .leading)
-                    LevelMeter(level: controller.systemLevel, active: true)
-                }
-            } else {
-                LevelMeter(level: controller.level, active: false)
-            }
-
-            Text(controller.statusLine)
-                .font(.caption)
-                .foregroundStyle(controller.capturedSilence ? .orange : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let endpointStatus = controller.endpointStatus {
-                Text(endpointStatus)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var activity: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Activity")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(controller.log.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Text("Mic")
+                            .font(.ui(Size.label))
+                            .foregroundStyle(Ink.faint)
+                            .frame(width: 44, alignment: .leading)
+                        LevelMeter(level: controller.level, active: true)
+                    }
+                    HStack(spacing: 6) {
+                        Text("System")
+                            .font(.ui(Size.label))
+                            .foregroundStyle(Ink.faint)
+                            .frame(width: 44, alignment: .leading)
+                        LevelMeter(level: controller.systemLevel, active: true)
                     }
                 }
             }
-            .frame(maxHeight: 110)
         }
     }
 
-    private var footer: some View {
+    // MARK: - Notes
+
+    private var notesSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Button("Meetings") {
+            PaneLabel(text: "Notes")
+            TextEditor(text: $controller.draft.bullets)
+                .font(.ui(14))
+                .foregroundStyle(Ink.ink)
+                .scrollContentBackground(.hidden)
+                .disabled(controller.phase == .starting || controller.phase.isBusy)
+                .frame(height: 100)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Ink.panel)
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Ink.line)))
+        }
+    }
+
+    // MARK: - Details
+
+    private var detailsSection: some View {
+        DisclosureGroup("Details") {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(controller.log.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.ui(Size.tiny))
+                        .foregroundStyle(Ink.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .font(.ui(Size.small))
+        .foregroundStyle(Ink.faint)
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        HStack(spacing: 4) {
+            footerButton(
+                icon: "clock.arrow.circlepath", title: "Meetings",
+                action: {
                     // An accessory app has no dock icon, so a window it opens
                     // has to be brought forward by hand.
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: MinutesWindow.library)
-                }
-                .controlSize(.small)
+                })
 
-                Button(controller.lastMeetingURL == nil ? "Open notes folder" : "Open this meeting") {
-                    controller.openNotesFolder()
-                }
-                .controlSize(.small)
+            footerButton(
+                icon: "folder", title: "Open meeting", labelVisible: false,
+                action: { controller.openNotesFolder() })
 
-                Spacer()
+            Spacer()
 
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .controlSize(.small)
-            }
-            HStack {
-                Button("Settings") {
+            footerButton(
+                icon: "gearshape", title: "Settings",
+                action: {
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: "settings")
-                }
-                .controlSize(.small)
-                .keyboardShortcut(",")
-                Spacer()
-            }
+                })
+            .keyboardShortcut(",")
+
+            footerButton(
+                icon: "power", title: "Quit", labelVisible: false,
+                action: { NSApplication.shared.terminate(nil) })
         }
+    }
+
+    private func footerButton(
+        icon: String, title: String, labelVisible: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            action()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.ui(Size.tiny))
+                if labelVisible {
+                    Text(title)
+                        .font(.ui(Size.small))
+                }
+            }
+            .foregroundStyle(Ink.muted)
+            .padding(8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
     }
 }
 
@@ -243,9 +306,9 @@ struct LevelMeter: View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(.quaternary)
+                    .fill(Ink.surface2)
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(active ? Color.green : Color.gray)
+                    .fill(active ? Ink.accentDeep : Ink.faint)
                     .frame(width: max(2, geometry.size.width * CGFloat(min(1, level))))
             }
         }
@@ -264,9 +327,14 @@ struct Notice: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
-            .foregroundStyle(tone == .warning ? Color.orange : Color.secondary)
+            .font(.ui(Size.small))
+            .foregroundStyle(tone == .warning ? Ink.warn : Ink.muted)
             .fixedSize(horizontal: false, vertical: true)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Ink.panel)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.line)))
     }
 }

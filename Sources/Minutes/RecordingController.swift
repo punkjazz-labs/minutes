@@ -51,6 +51,10 @@ final class RecordingController: ObservableObject {
     private var sessionTranscriber: FluidAudioTranscriber?
     private var sessionNotes: OpenAICompatibleNotesClient?
     private var activeDownloadID: UUID?
+    /// The title the controller generated for the current draft, so the
+    /// generated value can be refreshed without overwriting a title the
+    /// owner typed themselves.
+    private var generatedDraftTitle = ""
 
     private let firstRunKey = "minutes.firstRunNoticeAcknowledged"
 
@@ -66,6 +70,7 @@ final class RecordingController: ObservableObject {
         self.modelReady = FluidAudioTranscriber(model: loaded.asrModel).modelsAreReady()
         self.apiKeyField = keyStore.readKey() ?? ""
         self.microphonePermission = MicrophoneCapture.permissionState
+        refreshDraftTitle()
     }
 
     // MARK: - Permissions and settings locking
@@ -146,25 +151,22 @@ final class RecordingController: ObservableObject {
         switch phase {
         case .idle:
             if microphoneBlocked {
-                return
-                    "The microphone is blocked. Allow minutes in System Settings > Privacy & Security > Microphone."
+                return "Microphone access blocked"
             }
             if let error = userError { return error }
-            if !modelReady { return "Download the speech model in Settings." }
+            if !modelReady { return "Download the speech model in Settings" }
             if let notice = completionNotice { return notice }
-            return "Ready."
+            return "Ready"
         case .starting:
-            return "Opening the microphone and the system audio tap."
+            return "Starting…"
         case .recording:
-            return capturedSilence
-                ? "Recording, but every sample so far is digital zero. Nothing is being heard."
-                : "Recording."
-        case .working(let what):
-            return what
+            return capturedSilence ? "No microphone signal" : "Recording"
+        case .working:
+            return "Processing…"
         case .finished:
-            if let error = userError { return error }
             if let notice = completionNotice { return notice }
-            return "Done."
+            if let error = userError { return error }
+            return "Saved"
         }
     }
 
@@ -172,8 +174,7 @@ final class RecordingController: ObservableObject {
 
     func saveSettings() {
         guard !settingsLocked else {
-            settingsMessage =
-                "Settings cannot be saved while a meeting is starting or recording, while work is running, or while a model downloads."
+            settingsMessage = "Settings are locked while processing"
             return
         }
         var candidate = settings
@@ -183,7 +184,7 @@ final class RecordingController: ObservableObject {
             in: .whitespacesAndNewlines)
         let problems = candidate.problems
         guard problems.isEmpty else {
-            settingsMessage = "Settings were not saved: " + problems.joined(separator: " ")
+            settingsMessage = "Check settings: " + problems.joined(separator: " ")
             return
         }
         let previousModel = settingsStore.load().asrModel
@@ -206,10 +207,10 @@ final class RecordingController: ObservableObject {
             let trimmed = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 try keyStore.deleteKey()
-                endpointStatus = "The key was cleared. minutes will send the documented placeholder."
+                endpointStatus = "Key cleared"
             } else {
                 try keyStore.writeKey(trimmed)
-                endpointStatus = "The key was saved to the login keychain."
+                endpointStatus = "Key saved"
             }
         } catch {
             endpointStatus = error.localizedDescription
@@ -247,7 +248,7 @@ final class RecordingController: ObservableObject {
         let wanted = settings.notesModel
         let baseURL = settings.notesBaseURL
         isTestingEndpoint = true
-        endpointStatus = "Asking \(baseURL) for its models."
+        endpointStatus = "Checking connection…"
         Task { @MainActor in
             defer { isTestingEndpoint = false }
             do {
@@ -255,10 +256,9 @@ final class RecordingController: ObservableObject {
                 // The result only stands for the settings it was asked about.
                 guard settings.notesBaseURL == baseURL, settings.notesModel == wanted else { return }
                 if models.contains(wanted) {
-                    endpointStatus = "The endpoint answered and offers \(wanted)."
+                    endpointStatus = "Connected"
                 } else {
-                    endpointStatus =
-                        "The endpoint answered with \(models.count) models, but \(wanted) is not among them. The endpoint is reachable; this says nothing about whether generation works."
+                    endpointStatus = "Model unavailable"
                 }
             } catch {
                 guard settings.notesBaseURL == baseURL, settings.notesModel == wanted else { return }
@@ -337,6 +337,7 @@ final class RecordingController: ObservableObject {
         // separated that way: it does not open anything and there is nothing
         // inside it to await.
         guard state.claimStart() else { return }
+        refreshDraftTitle()
         // Snapshot everything the meeting will use before any await, so a
         // settings change mid-meeting cannot swap the engine under it.
         sessionSettings = settings
@@ -477,16 +478,18 @@ final class RecordingController: ObservableObject {
                 }
                 lastMeetingURL = outcome.directory.url
                 if outcome.notesArePending {
-                    completionNotice =
-                        "Meeting saved. The notes are still pending: \(outcome.notesPendingReason ?? "the endpoint did not answer")."
+                    append(outcome.notesPendingReason ?? "The endpoint did not answer.")
+                    completionNotice = "Transcript saved · Notes pending"
                 } else {
-                    completionNotice = "Meeting saved. The notes are ready."
+                    completionNotice = "Saved"
                 }
+                userError = nil
                 // The title and the bullets are in that meeting's folder now,
                 // so they do not carry into the next meeting. A write-up that
                 // failed keeps them, because then the folder does not have
                 // them and the app is the only place they exist.
                 draft.clearAfterWriteUp()
+                refreshDraftTitle()
                 state.finish()
             } catch {
                 userError = "The meeting could not be written up: \(error.localizedDescription)"
@@ -506,6 +509,20 @@ final class RecordingController: ObservableObject {
             model: settings.notesModel,
             apiKey: keyStore.effectiveKey()
         )
+    }
+
+    /// Gives the draft a readable datetime title, but only while it is still
+    /// empty or still holds the value the controller generated before. A title
+    /// the owner typed is never overwritten.
+    private func refreshDraftTitle() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM yyyy · HH:mm:ss"
+        let generated = formatter.string(from: Date())
+        let trimmed = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || draft.title == generatedDraftTitle {
+            draft.title = generated
+        }
+        generatedDraftTitle = generated
     }
 
     private func defaultTitle() -> String {

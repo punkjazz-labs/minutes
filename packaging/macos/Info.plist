@@ -17,9 +17,56 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.1</string>
+	<string>0.3.2</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
+	<!-- On macOS 14 ATS no longer allows plain-HTTP connections to IP
+	     addresses by default, which broke the bundled app talking to the
+	     local model gateway (NSURLErrorDomain -1022). Declare the local
+	     networking exception; no NSAllowsArbitraryLoads. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<!-- macOS 14+ ATS blocks plain HTTP to IP literals even with
+		     NSAllowsLocalNetworking (verified: -1022 in 0.02s). Exceptions
+		     must name the IPs/CIDR ranges explicitly. Local ranges only. -->
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>::1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>10.0.0.0/8</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>172.16.0.0/12</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>192.168.0.0/16</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>100.64.0.0/10</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Minutes connects to your model gateway to generate notes.</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.4</string>
 	<!-- Menu bar only. No dock icon, no window on launch. -->

@@ -30,20 +30,25 @@ public enum NotesError: Error, LocalizedError {
     case server(Int, String)
     case emptyResponse
     case badURL(String)
+    case transportSecurity
+    case requestTimedOut
 
     public var errorDescription: String? {
         switch self {
-        case .unreachable(let endpoint):
-            return "The notes endpoint at \(endpoint) did not answer, so the transcript is saved and the notes are waiting."
-        case .unauthorized(let endpoint):
-            return "The endpoint at \(endpoint) rejected the API key. Set the key in minutes settings."
-        case .server(let status, let body):
-            let detail = body.isEmpty ? "" : " \(body.prefix(300))"
-            return "The notes endpoint answered with status \(status).\(detail)"
+        case .unreachable:
+            return "The notes service did not answer. Transcript saved; the notes are waiting."
+        case .unauthorized:
+            return "Check the API key in minutes settings."
+        case .server(let status, _):
+            return "Notes service error (\(status)). Try again."
         case .emptyResponse:
-            return "The notes endpoint answered with no content."
-        case .badURL(let value):
-            return "The notes endpoint \(value) is not a usable URL."
+            return "The notes service returned no text."
+        case .badURL:
+            return "Check the endpoint in Settings."
+        case .transportSecurity:
+            return "macOS blocked this connection. Use HTTPS or allow local networking in the app."
+        case .requestTimedOut:
+            return "Notes request timed out. Try again."
         }
     }
 
@@ -51,8 +56,8 @@ public enum NotesError: Error, LocalizedError {
     /// rather than to tell the owner something is wrong with their setup.
     public var isRetryable: Bool {
         switch self {
-        case .unreachable, .server: return true
-        case .unauthorized, .emptyResponse, .badURL: return false
+        case .unreachable, .server, .requestTimedOut: return true
+        case .unauthorized, .emptyResponse, .badURL, .transportSecurity: return false
         }
     }
 }
@@ -190,9 +195,10 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
             return try await session.data(for: request)
         } catch let error as URLError {
             switch error.code {
-            case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
-                .notConnectedToInternet, .timedOut, .dnsLookupFailed:
-                throw NotesError.unreachable(baseURL)
+            case .appTransportSecurityRequiresSecureConnection:
+                throw NotesError.transportSecurity
+            case .timedOut:
+                throw NotesError.requestTimedOut
             default:
                 throw NotesError.unreachable(baseURL)
             }

@@ -4,7 +4,7 @@ import Foundation
 /// files written to disk all report the same thing.
 public enum MinutesBuild {
     public static let productName = "minutes"
-    public static let version = "0.3.1"
+    public static let version = "0.3.2"
 
     /// Stable application id sent to the model gateway as `x-litellm-customer-id`.
     public static let appID = "minutes"
