@@ -45,6 +45,12 @@ final class LibraryModel: ObservableObject {
     #endif
     var syncService: String? { library.syncService }
 
+    /// The open meeting's title, for the window's title bar.
+    var selectionTitle: String? {
+        guard let selection else { return nil }
+        return hits.first { $0.id == selection }?.meeting.title
+    }
+
     /// The count beside the search field, in the design's words.
     var hitsText: String? {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }

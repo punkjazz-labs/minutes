@@ -1,73 +1,68 @@
 import MinutesCore
 import SwiftUI
 
+/// The menu bar panel.
+///
+/// The meeting comes first: its title, and the notes typed for it, which steer
+/// the notes the model writes. The controls sit in a bar pinned to the bottom,
+/// so Record and Stop are always in the same place however much is above
+/// them. While recording, the bar is where the recording is said: a red dot
+/// and a running clock, a level for each side of the meeting, and Stop. A
+/// Core Audio tap shows no indicator of its own, so the app makes this one
+/// unmistakable.
 struct MenuView: View {
     @ObservedObject var controller: RecordingController
     @Environment(\.openWindow) private var openWindow
 
+    @State private var pendingDiscard: RecoverableRecording?
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
+            header
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            HLine()
 
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
                     if controller.firstRunNoticeNeeded {
-                        firstRunNotice
+                        Callout(
+                            systemImage: "lock.shield",
+                            text: "Audio is transcribed on this Mac. Text is sent to your model gateway for notes.",
+                            title: "Before your first meeting"
+                        ) {
+                            TextAction(title: "Continue", prominent: true) { controller.acknowledgeFirstRunNotice() }
+                        }
                     }
 
                     ForEach(controller.recoverable) { item in
-                        recoveryNotice(item)
+                        recoveryCallout(item)
                     }
 
-                    recordingRow
+                    meeting
 
-                    if controller.isRecording, controller.systemAudioNotice != nil {
-                        Notice(text: "No system audio detected", tone: .warning)
-                    }
-                    if !controller.modelReady {
-                        Button {
-                            NSApp.activate(ignoringOtherApps: true)
-                            openWindow(id: "settings")
-                        } label: {
-                            Text("Open Settings")
-                                .font(.ui(Size.small, weight: .medium))
-                                .foregroundStyle(Ink.accentDeep)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if controller.microphoneBlocked {
-                        HStack(spacing: 12) {
-                            Button { controller.openMicrophoneSettings() } label: {
-                                Text("Open Microphone Settings")
-                                    .font(.ui(Size.small, weight: .medium))
-                                    .foregroundStyle(Ink.accentDeep)
-                            }
-                            .buttonStyle(.plain)
-                            Button { controller.refreshPermissions() } label: {
-                                Text("Recheck permission")
-                                    .font(.ui(Size.small, weight: .medium))
-                                    .foregroundStyle(Ink.muted)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    notices
 
-                    notesSection
+                    notesEditor
 
                     if !controller.log.isEmpty {
                         detailsSection
                     }
                 }
-                .padding(20)
+                .padding(16)
             }
             .scrollContentBackground(.hidden)
 
             HLine()
+            controlBar
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            HLine()
             footer
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
         }
-        .frame(width: 400, height: 500)
+        .frame(width: 400, height: 560)
         .background(Ink.surface)
         .foregroundStyle(Ink.ink)
         .preferredColorScheme(.dark)
@@ -82,6 +77,21 @@ struct MenuView: View {
         ) { _ in
             controller.refreshPermissions()
         }
+        .confirmationDialog(
+            "Delete this recording?",
+            isPresented: Binding(
+                get: { pendingDiscard != nil },
+                set: { if !$0 { pendingDiscard = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete the recording", role: .destructive) {
+                if let item = pendingDiscard { controller.discard(item) }
+                pendingDiscard = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDiscard = nil }
+        } message: {
+            Text("The audio and the notes typed for it are removed. This cannot be undone.")
+        }
     }
 
     // MARK: - Header
@@ -89,217 +99,267 @@ struct MenuView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "waveform")
-                .font(.ui(13, weight: .medium))
+                .font(.ui(13, weight: .semibold))
                 .foregroundStyle(Ink.accentDeep)
             Text("Minutes")
                 .font(.ui(15, weight: .semibold))
                 .foregroundStyle(Ink.ink)
             Spacer()
-            if controller.isRecording {
-                Text(Timecode.string(from: controller.elapsed))
-                    .font(.mono(Size.small))
-                    .foregroundStyle(Ink.muted)
-            }
+            statePill
         }
     }
 
-    // MARK: - First run
-
-    private var firstRunNotice: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Audio is transcribed on this Mac. Text is sent to your model gateway for notes.")
-                .font(.ui(Size.small))
-                .foregroundStyle(Ink.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            Button {
-                controller.acknowledgeFirstRunNotice()
-            } label: {
-                Text("Continue")
-                    .font(.ui(Size.small, weight: .semibold))
-                    .foregroundStyle(Ink.ink)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Ink.surface2)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.lineStrong)))
+    /// What the app is doing, in two words, where the eye lands first.
+    @ViewBuilder
+    private var statePill: some View {
+        if controller.isRecording {
+            HStack(spacing: 5) {
+                Circle().fill(Color.red).frame(width: 6, height: 6)
+                Text("REC").font(.ui(Size.tiny, weight: .bold)).tracking(0.8)
             }
-            .buttonStyle(.plain)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Ink.panel)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.line)))
-    }
-
-    // MARK: - Interrupted recordings
-
-    private func recoveryNotice(_ item: RecoverableRecording) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("A recording from \(item.manifest.startedAt.formatted(date: .abbreviated, time: .shortened)) was not written up. \(Timecode.string(from: item.duration)) of audio and your notes were kept.")
-                .font(.ui(Size.small))
-                .foregroundStyle(Ink.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 12) {
-                Button { controller.recover(item) } label: {
-                    Text("Write it up").font(.ui(Size.small, weight: .semibold)).foregroundStyle(Ink.accentDeep)
-                }
-                .buttonStyle(.plain)
-                Button { controller.discard(item) } label: {
-                    Text("Delete").font(.ui(Size.small, weight: .medium)).foregroundStyle(Ink.muted)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Ink.panel)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.warn.opacity(0.5))))
-    }
-
-    // MARK: - Recording
-
-    private var recordingRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("Untitled meeting", text: $controller.draft.title)
-                .textFieldStyle(.plain)
-                .font(.ui(19, weight: .semibold))
-                .foregroundStyle(Ink.ink)
-                .disabled(
-                    controller.phase == .starting || controller.isRecording
-                        || controller.phase.isBusy)
-
-            Button {
-                controller.toggleRecording()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(
-                        systemName: controller.isRecording
-                            ? "stop.fill" : "circle.fill"
-                    )
-                    .font(.ui(12))
-                    Text(controller.isRecording ? "Stop" : "Record")
-                        .font(.ui(14, weight: .semibold))
-                }
-                .foregroundStyle(Ink.accentInk)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Ink.accent))
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("r")
-            .disabled(
-                !controller.isRecording
-                    && (controller.phase == .starting || controller.phase.isBusy))
-            .opacity(
-                !controller.isRecording
-                    && (controller.phase == .starting || controller.phase.isBusy)
-                    ? 0.45 : 1)
-
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(controller.isRecording ? (controller.capturedSilence ? Ink.warn : Color.red) : Ink.faint)
-                    .frame(width: 8, height: 8)
-                Text(controller.statusLine)
-                    .font(.ui(Size.small))
-                    .foregroundStyle(controller.capturedSilence ? Ink.warn : Ink.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if controller.isRecording {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 6) {
-                        Text("Mic")
-                            .font(.ui(Size.label))
-                            .foregroundStyle(Ink.faint)
-                            .frame(width: 44, alignment: .leading)
-                        LevelMeter(level: controller.level, active: true)
-                    }
-                    HStack(spacing: 6) {
-                        Text("System")
-                            .font(.ui(Size.label))
-                            .foregroundStyle(Ink.faint)
-                            .frame(width: 44, alignment: .leading)
-                        LevelMeter(level: controller.systemLevel, active: true)
-                    }
-                }
-            }
+            .foregroundStyle(Color.red)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.red.opacity(0.14)))
+            .accessibilityLabel("Recording")
         }
     }
 
-    // MARK: - Notes
+    // MARK: - The meeting
 
-    private var notesSection: some View {
+    private var meeting: some View {
         VStack(alignment: .leading, spacing: 6) {
-            PaneLabel(text: "Notes")
-            TextEditor(text: $controller.draft.bullets)
-                .font(.ui(14))
+            TextField("", text: $controller.draft.title, prompt: Text("Untitled meeting").foregroundStyle(Ink.faint))
+                .textFieldStyle(.plain)
+                .font(.title(22))
                 .foregroundStyle(Ink.ink)
-                .scrollContentBackground(.hidden)
                 .disabled(controller.phase == .starting || controller.phase.isBusy)
-                .frame(height: 100)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Ink.panel)
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Ink.line)))
+
+            if !controller.isRecording {
+                HStack(spacing: 6) {
+                    Circle().fill(statusColor).frame(width: 6, height: 6)
+                    Text(controller.statusLine)
+                        .font(.ui(Size.small))
+                        .foregroundStyle(controller.userError == nil ? Ink.muted : Ink.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
-    // MARK: - Details
+    private var statusColor: Color {
+        if controller.userError != nil || controller.microphoneBlocked { return Ink.warn }
+        if !controller.writingUp.isEmpty { return Ink.accentDeep }
+        return Ink.faint
+    }
+
+    @ViewBuilder
+    private var notices: some View {
+        if controller.microphoneBlocked {
+            Callout(
+                systemImage: "mic.slash.fill",
+                text: "minutes cannot hear your microphone until macOS allows it.",
+                title: "Microphone blocked", tone: .problem
+            ) {
+                HStack(spacing: 14) {
+                    TextAction(title: "Open Microphone Settings", prominent: true) {
+                        controller.openMicrophoneSettings()
+                    }
+                    TextAction(title: "Recheck") { controller.refreshPermissions() }
+                }
+            }
+        }
+        if controller.isRecording, controller.microphoneStarved || controller.capturedSilence {
+            Callout(systemImage: "mic.badge.xmark", text: controller.statusLine, tone: .warning)
+        }
+        if controller.isRecording, let notice = controller.systemAudioNotice {
+            Callout(systemImage: "speaker.slash", text: notice, title: "No system audio yet", tone: .warning)
+        }
+        if !controller.modelReady && !controller.isRecording {
+            Callout(
+                systemImage: "arrow.down.circle",
+                text: "The speech model runs on this Mac. It is downloaded once.",
+                title: "Speech model not downloaded", tone: .warning
+            ) {
+                TextAction(title: "Open Settings", prominent: true) { openSettings() }
+            }
+        }
+    }
+
+    private var notesEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                PaneLabel(text: "Your notes")
+                Spacer()
+                Text("Kept word for word")
+                    .font(.ui(Size.tiny))
+                    .foregroundStyle(Ink.faint)
+            }
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $controller.draft.bullets)
+                    .font(.ui(14))
+                    .foregroundStyle(Ink.ink)
+                    .scrollContentBackground(.hidden)
+                    .disabled(controller.phase == .starting || controller.phase.isBusy)
+                if controller.draft.bullets.isEmpty {
+                    Text("Write the points you care about. They steer the notes; the transcript is the evidence.")
+                        .font(.ui(14))
+                        .foregroundStyle(Ink.faint)
+                        .padding(.horizontal, 5)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 150)
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Ink.panel)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Ink.line)))
+        }
+    }
+
+    private func recoveryCallout(_ item: RecoverableRecording) -> some View {
+        Callout(
+            systemImage: "waveform.badge.exclamationmark",
+            text:
+                "\(item.manifest.startedAt.formatted(date: .abbreviated, time: .shortened)) · \(Timecode.string(from: item.duration)) of audio and your notes were kept.",
+            title: item.manifest.title.isEmpty ? "A recording was not written up" : item.manifest.title,
+            tone: .warning
+        ) {
+            HStack(spacing: 14) {
+                TextAction(title: "Write it up", prominent: true) { controller.recover(item) }
+                TextAction(title: "Delete…") { pendingDiscard = item }
+            }
+        }
+    }
 
     private var detailsSection: some View {
-        DisclosureGroup("Details") {
-            VStack(alignment: .leading, spacing: 2) {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(controller.log.enumerated()), id: \.offset) { _, line in
                     Text(line)
                         .font(.ui(Size.tiny))
                         .foregroundStyle(Ink.faint)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
             }
+            .padding(.top, 4)
+        } label: {
+            Text("Details")
+                .font(.ui(Size.small))
+                .foregroundStyle(Ink.faint)
         }
-        .font(.ui(Size.small))
-        .foregroundStyle(Ink.faint)
+        .tint(Ink.faint)
+    }
+
+    // MARK: - The control bar
+
+    @ViewBuilder
+    private var controlBar: some View {
+        if controller.isRecording {
+            HStack(spacing: 12) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(controller.capturedSilence ? Ink.warn : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(Timecode.string(from: controller.elapsed))
+                        .font(.mono(13))
+                        .monospacedDigit()
+                        .foregroundStyle(Ink.ink)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Recording for \(Timecode.string(from: controller.elapsed))")
+
+                Spacer(minLength: 4)
+
+                trackLevel("You", controller.level, color: Ink.accentDeep, active: !controller.microphoneStarved)
+                trackLevel(
+                    "Others", controller.systemLevel, color: Ink.them,
+                    active: !controller.systemAudioStarved && controller.systemAudioNotice == nil)
+
+                Button {
+                    controller.toggleRecording()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.fill").font(.system(size: 10))
+                        Text("Stop").font(.ui(13, weight: .semibold))
+                    }
+                    .foregroundStyle(Ink.bg)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(Ink.ink))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r")
+                .help("Stop both tracks and write the meeting up (⌘R)")
+            }
+        } else {
+            Button {
+                controller.toggleRecording()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "circle.fill").font(.ui(11))
+                    Text(controller.phase == .starting ? "Starting…" : "Record")
+                        .font(.ui(14, weight: .semibold))
+                    Spacer().frame(width: 2)
+                    Text("⌘R").font(.ui(Size.tiny)).opacity(0.65)
+                }
+                .foregroundStyle(Ink.accentInk)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Ink.accent))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("r")
+            .disabled(controller.phase == .starting || controller.phase.isBusy)
+            .opacity(controller.phase == .starting || controller.phase.isBusy ? 0.45 : 1)
+            .help("Record your microphone and what this Mac plays (⌘R)")
+        }
+    }
+
+    private func trackLevel(_ name: String, _ level: Float, color: Color, active: Bool) -> some View {
+        HStack(spacing: 5) {
+            Text(name)
+                .font(.ui(Size.tiny, weight: .medium))
+                .foregroundStyle(active ? Ink.muted : Ink.warn)
+            LevelBars(level: level, color: color, active: active)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name) level")
+        .accessibilityValue(active ? "\(Int((min(1, level) * 100).rounded())) percent" : "no audio")
     }
 
     // MARK: - Footer
 
-    private var footer: some View {
-        HStack(spacing: 4) {
-            footerButton(
-                icon: "clock.arrow.circlepath", title: "Meetings",
-                action: {
-                    // An accessory app has no dock icon, so a window it opens
-                    // has to be brought forward by hand.
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: MinutesWindow.library)
-                })
+    private func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "settings")
+    }
 
+    private var footer: some View {
+        HStack(spacing: 2) {
+            footerButton(icon: "rectangle.stack", title: "Meetings") {
+                // An accessory app has no dock icon, so a window it opens has
+                // to be brought forward by hand.
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: MinutesWindow.library)
+            }
             footerButton(
-                icon: "folder", title: "Open meeting", labelVisible: false,
-                action: { controller.openNotesFolder() })
+                icon: "folder", title: controller.lastMeetingURL == nil ? "Notes folder" : "Last meeting",
+                labelVisible: false
+            ) { controller.openNotesFolder() }
 
             Spacer()
 
-            footerButton(
-                icon: "gearshape", title: "Settings",
-                action: {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: "settings")
-                })
-            .keyboardShortcut(",")
-
-            footerButton(
-                icon: "power", title: "Quit", labelVisible: false,
-                action: { NSApplication.shared.terminate(nil) })
+            footerButton(icon: "gearshape", title: "Settings", labelVisible: false) { openSettings() }
+                .keyboardShortcut(",")
+            footerButton(icon: "power", title: "Quit", labelVisible: false) {
+                NSApplication.shared.terminate(nil)
+            }
+            .disabled(controller.isRecording)
+            .help(controller.isRecording ? "Stop the recording before quitting" : "Quit")
         }
     }
 
@@ -308,15 +368,12 @@ struct MenuView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button {
-            NSApp.activate(ignoringOtherApps: true)
             action()
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.ui(Size.tiny))
+                Image(systemName: icon).font(.ui(Size.small))
                 if labelVisible {
-                    Text(title)
-                        .font(.ui(Size.small))
+                    Text(title).font(.ui(Size.small))
                 }
             }
             .foregroundStyle(Ink.muted)
@@ -326,46 +383,5 @@ struct MenuView: View {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
-    }
-}
-
-struct LevelMeter: View {
-    let level: Float
-    let active: Bool
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Ink.surface2)
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(active ? Ink.accentDeep : Ink.faint)
-                    .frame(width: max(2, geometry.size.width * CGFloat(min(1, level))))
-            }
-        }
-        .frame(height: 6)
-    }
-}
-
-struct Notice: View {
-    enum Tone {
-        case plain
-        case warning
-    }
-
-    let text: String
-    let tone: Tone
-
-    var body: some View {
-        Text(text)
-            .font(.ui(Size.small))
-            .foregroundStyle(tone == .warning ? Ink.warn : Ink.muted)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Ink.panel)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.line)))
     }
 }

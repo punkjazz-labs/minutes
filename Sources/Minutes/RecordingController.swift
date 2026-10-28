@@ -163,8 +163,17 @@ final class RecordingController: ObservableObject {
     var syncWarning: String? { store.syncWarning }
 
     var firstRunNoticeNeeded: Bool {
-        !UserDefaults.standard.bool(forKey: firstRunKey)
+        #if DEBUG
+        if let firstRunOverride { return firstRunOverride }
+        #endif
+        return !UserDefaults.standard.bool(forKey: firstRunKey)
     }
+
+    #if DEBUG
+    /// Set only by the snapshot renderer, so a picture never depends on what
+    /// this Mac's defaults happen to hold.
+    private var firstRunOverride: Bool?
+    #endif
 
     func acknowledgeFirstRunNotice() {
         UserDefaults.standard.set(true, forKey: firstRunKey)
@@ -622,6 +631,7 @@ final class RecordingController: ObservableObject {
                 lastMeetingURL = outcome.directory.url
                 // Written up, so the session has done its job.
                 try? session?.discard()
+                NotificationCenter.default.post(name: .minutesMeetingWritten, object: outcome.directory.url)
                 if outcome.notesArePending {
                     append(outcome.notesPendingReason ?? "The endpoint did not answer.")
                     completionNotice = "Transcript saved · Notes pending"
@@ -731,3 +741,37 @@ final class RecordingController: ObservableObject {
         if log.count > 40 { log.removeFirst(log.count - 40) }
     }
 }
+
+#if DEBUG
+extension RecordingController {
+    /// Puts the controller into a fixed state for the screenshots. Debug
+    /// builds only: it opens no device and writes nothing.
+    func showForSnapshot(
+        recording: Bool,
+        elapsed: TimeInterval = 0,
+        level: Float = 0,
+        systemLevel: Float = 0,
+        draft: MeetingDraft,
+        writingUp: [RunningWriteUp] = [],
+        recoverable: [RecoverableRecording] = [],
+        completionNotice: String? = nil,
+        log: [String] = []
+    ) {
+        state = RecordingState(phase: recording ? .recording : .idle)
+        startedAt = recording ? Date().addingTimeInterval(-elapsed) : nil
+        self.elapsed = elapsed
+        self.level = level
+        self.systemLevel = systemLevel
+        systemAudioRunning = recording
+        self.draft = draft
+        self.writingUp = writingUp
+        self.recoverable = recoverable
+        self.completionNotice = completionNotice
+        self.log = log
+        userError = nil
+        modelReady = true
+        microphonePermission = .granted
+        firstRunOverride = false
+    }
+}
+#endif

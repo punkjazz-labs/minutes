@@ -85,6 +85,16 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Privacy") {
+                Text(controller.privacyClaim)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(PrivacyClaim.firstRunNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Storage") {
                 HStack {
                     Text(controller.settings.notesFolderPath)

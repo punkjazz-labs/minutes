@@ -21,6 +21,7 @@ struct Checks {
             try await recoveryChecks(run)
             try await writeUpFixChecks(run)
             try libraryFixChecks(run)
+            libraryLayoutChecks(run)
         } catch {
             run.failed("a check threw: \(error.localizedDescription)")
         }

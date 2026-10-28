@@ -22,13 +22,12 @@ struct MinutesApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // One window. A meeting opens inside it and the back control returns
-        // to the list, so reading three meetings never leaves three windows
-        // on screen.
+        // One window: the meetings in a list, and the one selected open beside
+        // it, so reading three meetings never leaves three windows on screen.
         Window("minutes", id: MinutesWindow.library) {
             LibraryWindow()
         }
-        .defaultSize(width: 1_020, height: 620)
+        .defaultSize(width: 1_240, height: 760)
 
         Window("Settings", id: "settings") {
             SettingsView(controller: controller)
@@ -42,5 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu bar only. The Info.plist in packaging/macos says the same with
         // LSUIElement, this covers a run without that plist.
         NSApp.setActivationPolicy(.accessory)
+        #if DEBUG
+        // `swift run minutes --render-snapshots <dir>` draws the app's views
+        // from a made-up notes folder and quits. Not in a release build.
+        _ = MainActor.assumeIsolated { SnapshotRenderer.runIfAsked() }
+        #endif
     }
 }

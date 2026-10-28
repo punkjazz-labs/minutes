@@ -59,6 +59,36 @@ public enum TranscriptFile {
     }
 }
 
+/// Consecutive lines from one speaker, shown under one name.
+///
+/// A transcript cut into lines every few seconds repeats the speaker on every
+/// line, and the eye has to read the name forty times to find the three places
+/// it changes. A turn says the name once, where it changes.
+public struct TranscriptTurn: Sendable, Equatable, Identifiable {
+    public let speaker: String
+    public let lines: [TranscriptLine]
+
+    public var id: Int { lines.first?.index ?? 0 }
+    public var timecode: String { lines.first?.timecode ?? "" }
+    public var isOwner: Bool { lines.first?.isOwner ?? false }
+
+    public static func group(_ lines: [TranscriptLine]) -> [TranscriptTurn] {
+        var turns: [TranscriptTurn] = []
+        var current: [TranscriptLine] = []
+        for line in lines {
+            if let speaker = current.first?.speaker, speaker != line.speaker {
+                turns.append(TranscriptTurn(speaker: speaker, lines: current))
+                current = []
+            }
+            current.append(line)
+        }
+        if let speaker = current.first?.speaker {
+            turns.append(TranscriptTurn(speaker: speaker, lines: current))
+        }
+        return turns
+    }
+}
+
 extension TranscriptFile {
     /// The lines that contain the words looked for, ignoring case and accents,
     /// in the order they were said.

@@ -78,3 +78,30 @@ It does not claim the tap is broken. It does not claim the permission was
 denied. It does not claim the meeting was quiet. It says how many samples were
 zero, how many times it rebuilt, and what it heard, and leaves the owner to
 know which of the three it was.
+
+## Amended 2026-10-28: three in a row, not three a meeting
+
+A review found that a budget of three per meeting is spent by the failure it
+was not written for. A meeting's first minutes are spent waiting for people to
+join, and the far side is quiet for long stretches whenever the owner speaks,
+so three quiet stretches of thirty seconds use the rebuilds up early, and a tap
+that fails forty minutes in, which is the failure in the forum thread, is never
+rebuilt at all. Worse, a meeting whose last thirty seconds were quiet on the far
+side was then written up as a tap that went quiet for good.
+
+So the three are counted in a row since sound was last heard. A rebuild after
+which sound arrives proved the tap works, and the count starts again. A Mac
+that is simply quiet never makes a sound, so it still stops after the same
+three attempts and is still reported as silent, which is the case the bound
+exists for. Every rebuild is still counted for the record, and still named in
+the activity log.
+
+Two more triggers sit beside the run of zeros. A tap that hands over no buffers
+at all for five seconds, not even digital zero, has stopped rather than gone
+quiet, so it is rebuilt under the same count. And the output device changing its
+sample rate, which a headset does when a call switches it into its call mode,
+rebuilds the tap the way a device change does, uncounted, because it is a
+normal event and the tap's format is read when the tap is built.
+
+Neither number is measured yet, as before. The checks drive both triggers with
+a scripted source and a clock moved by hand.
