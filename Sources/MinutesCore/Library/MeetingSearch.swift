@@ -68,3 +68,56 @@ public enum MeetingSearch {
         return out.trimmingCharacters(in: .whitespaces)
     }
 }
+
+/// The searchable text of each meeting, read once and kept until its file
+/// changes.
+///
+/// Search runs on every keystroke, and reading every transcript in the notes
+/// folder on every keystroke is fine for ten meetings and a stall for three
+/// hundred hour-long ones. A file is read again when its modification date or
+/// its size changes, so a re-run or a rename is seen at once.
+public final class MeetingTextCache: @unchecked Sendable {
+
+    private struct Stamp: Equatable {
+        let modified: Date?
+        let size: Int?
+    }
+
+    private struct Entry {
+        let stamp: Stamp
+        let text: String
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var fileReads = 0
+
+    public init() {}
+
+    /// How many times a file was actually read, for the checks.
+    public var reads: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return fileReads
+    }
+
+    public func text(at url: URL, reading read: (URL) -> String) -> String {
+        let values = try? URL(fileURLWithPath: url.path).resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let stamp = Stamp(modified: values?.contentModificationDate, size: values?.fileSize)
+
+        lock.lock()
+        if let entry = entries[url.path], entry.stamp == stamp {
+            lock.unlock()
+            return entry.text
+        }
+        lock.unlock()
+
+        let text = read(url)
+        lock.lock()
+        entries[url.path] = Entry(stamp: stamp, text: text)
+        fileReads += 1
+        lock.unlock()
+        return text
+    }
+}

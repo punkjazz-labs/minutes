@@ -56,8 +56,6 @@ struct SettingsView: View {
                     Text("Not requested").font(.caption).foregroundStyle(.secondary)
                 case .denied, .restricted:
                     Text("Access blocked").font(.caption).foregroundStyle(.secondary)
-                default:
-                    EmptyView()
                 }
                 if controller.microphoneBlocked {
                     HStack {
@@ -74,7 +72,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(controller.settingsLocked || controller.modelDownloadProgress != nil)
-                .onChange(of: controller.settings.asrModel) { _ in controller.saveSettings() }
+                .onChange(of: controller.settings.asrModel) { _, _ in controller.saveSettings() }
 
                 if let progress = controller.modelDownloadProgress {
                     ProgressView(value: progress)
@@ -85,6 +83,16 @@ struct SettingsView: View {
                     Button("Download model") { controller.downloadModel() }
                         .disabled(controller.settingsLocked)
                 }
+            }
+
+            Section("Privacy") {
+                Text(controller.privacyClaim)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(PrivacyClaim.firstRunNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Storage") {
@@ -105,7 +113,7 @@ struct SettingsView: View {
                     isOn: $controller.settings.keepAudioAfterTranscription
                 )
                 .disabled(controller.settingsLocked)
-                .onChange(of: controller.settings.keepAudioAfterTranscription) { _ in
+                .onChange(of: controller.settings.keepAudioAfterTranscription) { _, _ in
                     controller.saveSettings()
                 }
             }

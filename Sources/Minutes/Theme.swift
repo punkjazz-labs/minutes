@@ -1,3 +1,4 @@
+import MinutesCore
 import SwiftUI
 
 /// The approved palette and scale, in one place. Every value here comes from
@@ -138,5 +139,233 @@ struct AnchorChip: View {
 struct HLine: View {
     var body: some View {
         Rectangle().fill(Ink.line).frame(height: 1)
+    }
+}
+
+extension Font {
+    /// Meeting titles. A serif, so a title reads as the name of a document and
+    /// not as the label of a control.
+    static func title(_ size: CGFloat) -> Font {
+        .system(size: size, weight: .semibold, design: .serif)
+    }
+}
+
+/// A small rounded fact about a meeting: when, how long, who was recorded.
+struct Chip: View {
+    let text: String
+    var systemImage: String?
+    var color: Color = Ink.muted
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage).font(.system(size: 10, weight: .medium))
+            }
+            Text(text).font(.ui(Size.small, weight: .medium))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(color == Ink.muted ? Ink.surface2 : color.opacity(0.14)))
+        .overlay(Capsule().stroke(color == Ink.muted ? Ink.line : color.opacity(0.35), lineWidth: 1))
+        .fixedSize()
+    }
+}
+
+extension NotesState {
+    /// The state as a chip: colour for the two a person must act on.
+    var chipColor: Color {
+        switch self {
+        case .written: return Ink.muted
+        case .pending: return Ink.warn
+        case .transcriptOnly: return Ink.muted
+        case .transcriptionFailed: return Ink.fail
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .written: return "checkmark"
+        case .pending: return "clock"
+        case .transcriptOnly: return "text.alignleft"
+        case .transcriptionFailed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    /// The words on the chip. Pending is said as what it is to the reader.
+    var chipText: String { self == .pending ? "Notes pending" : label }
+}
+
+/// An icon that behaves like a button, with its name on hover, because an
+/// icon alone is a guess.
+struct IconButton: View {
+    let systemImage: String
+    let help: String
+    var tint: Color = Ink.muted
+    var hoverTint: Color = Ink.ink
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(hovering ? hoverTint : tint)
+                .frame(width: 26, height: 24)
+                .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Ink.surface2 : Color.clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The field that finds words in a transcript: a magnifier, the words, a
+/// count, and a way to clear them.
+struct SearchField: View {
+    let prompt: String
+    @Binding var text: String
+    var count: String?
+    var onSubmit: () -> Void = {}
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Ink.faint)
+            TextField("", text: $text, prompt: Text(prompt).foregroundStyle(Ink.faint))
+                .textFieldStyle(.plain)
+                .font(.ui(Size.row))
+                .foregroundStyle(Ink.ink)
+                .onSubmit(onSubmit)
+            if let count {
+                Text(count).font(.ui(Size.tiny)).foregroundStyle(Ink.faint).fixedSize()
+            }
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(Ink.faint)
+                }
+                .buttonStyle(.plain)
+                .help("Clear")
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Ink.bg)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Ink.line)))
+    }
+}
+
+/// Who spoke, as a letter in a circle: your side in the accent, the other side
+/// in its own blue, the way the transcript has always told them apart.
+struct SpeakerBadge: View {
+    let speaker: String
+    let isOwner: Bool
+    var size: CGFloat = 20
+
+    var body: some View {
+        Text(String(speaker.prefix(1)).uppercased())
+            .font(.system(size: size * 0.5, weight: .bold))
+            .foregroundStyle(Ink.bg)
+            .frame(width: size, height: size)
+            .background(Circle().fill(isOwner ? Ink.accentDeep : Ink.them))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A few bars that move with a track's level, small enough to sit beside its
+/// name in a control bar.
+struct LevelBars: View {
+    let level: Float
+    var color: Color
+    var active = true
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<5, id: \.self) { index in
+                let threshold = Float(index) / 5
+                let lit = active && min(1, level * 1.8) > threshold
+                Capsule()
+                    .fill(lit ? color : Ink.lineStrong)
+                    .frame(width: 3, height: [6, 10, 13, 10, 6][index])
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: level)
+    }
+}
+
+/// A message in the menu with an icon, tinted by how much it matters, and
+/// room for the actions that answer it.
+struct Callout<Actions: View>: View {
+    enum Tone {
+        case info
+        case warning
+        case problem
+    }
+
+    let systemImage: String
+    let text: String
+    var title: String?
+    var tone: Tone = .info
+    @ViewBuilder var actions: () -> Actions
+
+    private var color: Color {
+        switch tone {
+        case .info: return Ink.muted
+        case .warning: return Ink.warn
+        case .problem: return Ink.fail
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 6) {
+                if let title {
+                    Text(title).font(.ui(Size.row, weight: .semibold)).foregroundStyle(Ink.ink)
+                }
+                Text(text)
+                    .font(.ui(Size.small))
+                    .foregroundStyle(Ink.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                actions()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(tone == .info ? Ink.panel : color.opacity(0.08))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(tone == .info ? Ink.line : color.opacity(0.35))))
+    }
+}
+
+extension Callout where Actions == EmptyView {
+    init(systemImage: String, text: String, title: String? = nil, tone: Tone = .info) {
+        self.init(systemImage: systemImage, text: text, title: title, tone: tone, actions: { EmptyView() })
+    }
+}
+
+/// A word that acts, in the accent or quiet, the way every action in the
+/// design is a word rather than chrome.
+struct TextAction: View {
+    let title: String
+    var prominent = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.ui(Size.small, weight: prominent ? .semibold : .medium))
+                .foregroundStyle(prominent ? Ink.accentDeep : Ink.muted)
+        }
+        .buttonStyle(.plain)
     }
 }

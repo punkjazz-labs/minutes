@@ -10,7 +10,7 @@ final class LibraryModel: ObservableObject {
 
     @Published private(set) var hits: [MeetingSearchHit] = []
     @Published var query = "" {
-        didSet { if query != oldValue { reload() } }
+        didSet { if query != oldValue { reload(debounce: true) } }
     }
     @Published var selection: String?
     @Published var renaming: String?
@@ -19,6 +19,10 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var failure: String?
 
     private let settingsStore: any SettingsStoring
+    /// One cache for the life of the window, so a keystroke reads only the
+    /// files that changed since the last search.
+    private let cache = MeetingTextCache()
+    private var searchTask: Task<Void, Never>?
 
     init(settingsStore: any SettingsStoring = UserDefaultsSettingsStore()) {
         self.settingsStore = settingsStore
@@ -27,8 +31,25 @@ final class LibraryModel: ObservableObject {
     var settings: AppSettings { settingsStore.load() }
     var library: MeetingLibrary { MeetingLibrary(settings: settings) }
 
-    var folderText: String { library.folderText }
+    var folderText: String {
+        #if DEBUG
+        if let folderTextForSnapshot { return folderTextForSnapshot }
+        #endif
+        return library.folderText
+    }
+
+    #if DEBUG
+    /// The folder a screenshot names, so a picture in the repository shows the
+    /// default folder and not a scratch path on the Mac that drew it.
+    var folderTextForSnapshot: String?
+    #endif
     var syncService: String? { library.syncService }
+
+    /// The open meeting's title, for the window's title bar.
+    var selectionTitle: String? {
+        guard let selection else { return nil }
+        return hits.first { $0.id == selection }?.meeting.title
+    }
 
     /// The count beside the search field, in the design's words.
     var hitsText: String? {
@@ -36,13 +57,31 @@ final class LibraryModel: ObservableObject {
         return hits.count == 1 ? "1 meeting" : "\(hits.count) meetings"
     }
 
-    func reload() {
-        do {
-            hits = try library.search(query)
-            failure = nil
-        } catch {
-            hits = []
-            failure = error.localizedDescription
+    /// Searches away from the main thread, so the window never stalls on a
+    /// folder of long transcripts. A search that a newer keystroke overtook is
+    /// dropped rather than shown.
+    func reload(debounce: Bool = false) {
+        searchTask?.cancel()
+        let library = self.library
+        let query = self.query
+        let cache = self.cache
+        searchTask = Task { @MainActor in
+            if debounce {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                if Task.isCancelled { return }
+            }
+            let result = await Task.detached {
+                Result { try library.search(query, cache: cache) }
+            }.value
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .success(let found):
+                hits = found
+                failure = nil
+            case .failure(let error):
+                hits = []
+                failure = error.localizedDescription
+            }
         }
     }
 

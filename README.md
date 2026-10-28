@@ -2,13 +2,46 @@
 
 A local meeting notes app for macOS. The recording and the transcript are made
 on your Mac. The transcript is sent to a model endpoint you choose to write the
-notes. Nothing is sent to any other service.
+notes. minutes sends nothing to any other service; where that endpoint passes
+the transcript on to is set by the endpoint, not by minutes.
+
+![A meeting: the notes with their timestamps, and the transcript beside them](docs/screenshots/library.png)
 
 This is the v0.3.1 source update. The earlier v0.3 release was distributed as a
 signed and notarised disk image; v0.3.1 is a source-tree update on top of that
 work and makes no signing or notarisation claim of its own here. This file says
 plainly which parts work, which are stubs, and which have been measured on real
 hardware rather than assumed.
+
+### What this update adds on top of v0.3.2
+
+- **Interrupted recordings come back.** A meeting records into its own folder
+  under Application Support, beside the title and the notes as you type them.
+  If the app quits or crashes mid-meeting, or a write-up fails, the menu offers
+  the recording back to write up or delete.
+- **Back-to-back meetings.** Stop frees Record at once; the write-up runs in the
+  background and the menu says what is being written up.
+- **A microphone or tap that stops is noticed and reopened**, a sample rate
+  change rebuilds the tap, gaps are kept as silence so the two tracks stay in
+  order, and every input channel reaches the track.
+- **The menu** keeps the meeting's title and your notes in front and the
+  controls in a bar at the bottom: Record, or the running clock, a level for
+  each side and Stop.
+- **The meetings window** is a list beside the open meeting. The list is
+  grouped by day and moves with the arrow keys. A meeting reads as a page:
+  title, chips for when, how long, which sides and the notes state, your notes,
+  then the model's notes with timestamps that open the line they rest on. The
+  panel beside it holds the transcript, in speaker turns with Find, or the
+  questions asked about the meeting, with three ready-made ones to start.
+- **Settings** shows the privacy claim again.
+
+These views, drawn from an invented notes folder by
+`swift run minutes --render-snapshots docs/screenshots` in a debug build:
+
+![The menu while recording](docs/screenshots/menu-recording.png)
+![The menu at rest, offering back an interrupted recording](docs/screenshots/menu-idle.png)
+![A search in the meetings window](docs/screenshots/library-search.png)
+![A question about a meeting](docs/screenshots/meeting-ask.png)
 
 ### What v0.3.1 adds
 
@@ -50,7 +83,16 @@ signing or notarisation.
 - **Microphone capture.** Real. It opens the default input device, converts
   whatever format the device gives to 16 kHz mono, and writes a WAV while the
   meeting runs. Verified on this Mac by recording three seconds and reading the
-  file back: `RIFF WAVE, Microsoft PCM, 16 bit, mono 16000 Hz`.
+  file back: `RIFF WAVE, Microsoft PCM, 16 bit, mono 16000 Hz`. Every channel
+  the device delivers is mixed into that mono track.
+- **A microphone that changes or stops under a meeting is reopened.**
+  `AVAudioEngine` stops without an error when the input changes under it,
+  which is what plugging in a headset, or a call switching a Bluetooth headset
+  into its call mode, does. minutes listens for that and reopens the input at
+  once. It also watches whether any audio arrives at all: four seconds of
+  nothing reopens the input, at most three times in a row while nothing comes
+  back, and the menu says so while it lasts. The time the input was away is
+  written as silence, so the two tracks stay on one clock.
 - **System audio capture, meaning the other side of the meeting.** A Core Audio
   process tap on everything this Mac plays, minus this app, inside a private
   aggregate device whose main sub-device is the real output device, with
@@ -63,9 +105,11 @@ signing or notarisation.
   **Whether the permission was actually granted on this machine has not been
   measured. See what was measured, below.**
 - **A tap that goes quiet is rebuilt, counted and reported.** Thirty seconds of
-  unbroken digital zero rebuilds the tap, at most three times a meeting, and
-  every rebuild is named in the activity log as a retry rather than a
-  diagnosis. A quiet meeting and a permission that was never granted look
+  unbroken digital zero rebuilds the tap, at most three times in a row while
+  nothing is heard, and every rebuild is named in the activity log as a retry
+  rather than a diagnosis. Sound arriving after a rebuild starts the count
+  again. A tap that delivers nothing at all, not even digital zero, is rebuilt
+  the same way, and so is a tap whose output device changed its sample rate. A quiet meeting and a permission that was never granted look
   identical to any app, so minutes measures the track and says what it heard.
   The reasoning is in
   `docs/decisions/0004-a-quiet-tap-is-rebuilt-three-times-and-then-reported.md`.
@@ -84,11 +128,14 @@ signing or notarisation.
   screen, in the activity log and in the transcript, and is never sent to the
   speech engine. Digital silence and a quiet room are indistinguishable once
   they are on disk, so the app measures instead of assuming.
-- **A recording is a readable file while it is still being made.** The WAV
-  header is rewritten after every buffer, so a force quit, a crash or a power
-  cut during a meeting costs the samples that were never written and nothing
-  else. The reader takes the rest of the file when a header says zero, so a
-  recording interrupted by an older build opens as well.
+- **A recording survives the app.** A meeting records into its own folder under
+  `~/Library/Application Support/minutes/recordings-in-progress`, beside a
+  small manifest that keeps the title and the notes as you type them. The WAV
+  header is rewritten after every buffer, so the file is readable at every
+  moment, and the next launch offers back any recording that was never written
+  up. Not the notes folder, because it may sync, and a growing recording should
+  not be copied to a cloud service a few seconds at a time. The writes are not
+  forced to disk, so a power cut can still cost the last few seconds.
 - **Local transcription with Parakeet.** FluidAudio, Core ML on the Apple
   Neural Engine, `parakeet-tdt-0.6b-v3-coreml`. Offline once the model is
   downloaded. Token timings become timestamped lines.
@@ -101,16 +148,22 @@ signing or notarisation.
   database and no sync. What you typed is written to its own `bullets.md` and
   is only ever read again. Audio is deleted once the transcript exists unless
   you ask to keep it.
-- **A meeting library.** Meetings in the menu bar popover opens a window
-  listing every meeting in the notes folder
-  with its date, length and notes state, read from the files rather than from
-  an index. A meeting whose transcription failed says so on its row. Rename
-  edits the row and renames the directory, and it holds on a meeting written by
-  an older version that has no `meta.json`. Files reveals it in
-  Finder. Delete asks first and then removes the whole directory, audio
-  included. The header names the notes folder and the service it syncs to.
+- **A meeting library.** Meetings in the menu bar popover opens a window with
+  every meeting in the notes folder in a list, grouped by day, beside the one
+  that is open. The arrow keys move through the list. Each row says the time,
+  the length, whether only your side was recorded, and marks notes that are
+  still waiting and a transcription that failed, all read from the files
+  rather than from an index. Rename, Show in Finder and Delete are on each
+  row's context menu. Rename renames the directory and the title in
+  `meta.json`, and holds on a meeting written by an older version that has no
+  `meta.json`, and on one whose `meta.json` cannot be read, which is set aside
+  as `meta.unreadable.json` rather than written over. Delete asks first and
+  then removes the whole directory, audio included. The foot of the list names
+  the notes folder and the service it syncs to.
 - **Search across meetings.** Titles, notes and transcripts, with the words
-  around the match shown under the title of each meeting that matched.
+  around the match shown under the title of each meeting that matched, who
+  said them included and timecodes left out. Each meeting's text is read once
+  and kept until its file changes, and the search runs off the main thread.
 - **Traceable notes.** The timestamps the model already writes become chips.
   Clicking one scrolls the transcript to that line and marks it. A chip is
   never given a link that lands on the wrong words, and that is one rule and
@@ -148,7 +201,7 @@ signing or notarisation.
   No second Mac has installed it, and the two permission prompts still need a
   person to answer them. The measured section below says what was verified, and
   by which command.
-- **Checks**, `minutes-checks`, 336 assertions covering the hardware seams
+- **Checks**, `minutes-checks`, 495 assertions covering the hardware seams
   with fakes behind all of them. The tap is behind a `SystemAudioSource`
   protocol, so rebuild counting, the two-track write-up and the silence
   reporting run without a permission grant or a sound card; anchor parsing,
@@ -235,6 +288,16 @@ numbers and not estimates:
   no entitlement of its own here and the list stays at one key.
 
 Not measured, and not claimed:
+
+- Reopening the microphone after a device change, rebuilding the tap after a
+  sample rate change, and rebuilding a tap that stopped delivering. Each is
+  checked against a scripted source and a clock moved by hand, and none has
+  been run with a real headset or a real call.
+- What the tap delivers when the output device has a microphone of its own, as
+  AirPods and USB headsets do. If the tap's buffers do not arrive, the track
+  reports that nothing is arriving instead of looking quiet.
+- Crash recovery after a real crash. The session folder, finding it again and
+  writing it up are checked against files written the way a crash leaves them.
 
 - Whether a tap on this macOS version delivers all-zero PCM after several
   minutes. The rebuild path exists and is checked against a fake, and it has

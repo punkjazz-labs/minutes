@@ -47,13 +47,28 @@ final class MeetingDetailModel: ObservableObject {
     @Published private(set) var anchored = AnchoredNotes(lines: [], unanchored: [])
     @Published var hotLine: Int?
     @Published var question = ""
-    @Published private(set) var turns: [AskConversation.Turn] = []
+    @Published private(set) var turnsAsked: [AskConversation.Turn] = []
+    /// The transcript in speaker turns, worked out once per load.
+    @Published private(set) var turns: [TranscriptTurn] = []
+    @Published var transcriptQuery = "" {
+        didSet {
+            guard transcriptQuery != oldValue else { return }
+            matches = TranscriptFile.matches(transcriptQuery, in: transcript)
+            matchCursor = nil
+            if let first = matches.first { jump(to: first) }
+        }
+    }
+    @Published private(set) var matches: [Int] = []
+    private var matchCursor: Int?
     @Published private(set) var isAsking = false
     @Published private(set) var askFailure: String?
     @Published private(set) var isRewriting = false
     @Published private(set) var failure: String?
 
     let path: String
+    /// Called when the notes on disk changed, so the list beside this meeting
+    /// shows the new state.
+    var onChanged: (() -> Void)?
     private let settingsStore: any SettingsStoring
     private var conversation: AskConversation?
 
@@ -88,11 +103,51 @@ final class MeetingDetailModel: ObservableObject {
         let loaded = library.record(for: summary)
         record = loaded
         anchored = loaded.anchoredNotes
+        turns = TranscriptTurn.group(loaded.transcript)
+        matches = TranscriptFile.matches(transcriptQuery, in: loaded.transcript)
         let conversation = AskStore.shared.conversation(for: path, title: summary.title)
         self.conversation = conversation
-        turns = conversation.turns
+        turnsAsked = conversation.turns
         isAsking = conversation.isAsking
         askFailure = conversation.failure
+    }
+
+    /// What the notes pane says when there are no model notes to show.
+    var notesPlaceholder: String {
+        switch record?.summary.notesState {
+        case .pending:
+            let reason = record?.notes?.pendingReason.map { " \($0)" } ?? ""
+            return "The notes are waiting.\(reason) Write notes again when the endpoint is back."
+        case .transcriptionFailed:
+            return "The speech engine could not read this meeting, so there is nothing to write notes from. The audio was kept."
+        case .transcriptOnly:
+            return "This meeting has a transcript and no notes. Write notes to make them."
+        default:
+            return "The model wrote nothing for this meeting."
+        }
+    }
+
+    /// "3 of 12" while stepping through matches, "12 found" before.
+    var matchText: String? {
+        guard !transcriptQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if matches.isEmpty { return "none" }
+        if let matchCursor { return "\(matchCursor + 1) of \(matches.count)" }
+        return matches.count == 1 ? "1 line" : "\(matches.count) lines"
+    }
+
+    func nextMatch() { stepMatch(by: 1) }
+    func previousMatch() { stepMatch(by: -1) }
+
+    private func stepMatch(by step: Int) {
+        guard !matches.isEmpty else { return }
+        let next = ((matchCursor ?? (step > 0 ? -1 : 0)) + step + matches.count) % matches.count
+        matchCursor = next
+        jump(to: matches[next])
+    }
+
+    func reveal() {
+        guard let directory = record?.summary.directory.url else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([directory])
     }
 
     // MARK: - Jumping
@@ -125,6 +180,7 @@ final class MeetingDetailModel: ObservableObject {
                     endpoint: current.notesBaseURL,
                     model: current.notesModel)
                 load()
+                onChanged?()
             } catch {
                 failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
@@ -133,6 +189,12 @@ final class MeetingDetailModel: ObservableObject {
     }
 
     // MARK: - Asking
+
+    /// Asks one of the ready-made questions, the way typing it would.
+    func ask(_ preset: String) {
+        question = preset
+        ask()
+    }
 
     func ask() {
         guard let conversation, let record else { return }
@@ -149,7 +211,7 @@ final class MeetingDetailModel: ObservableObject {
             } catch {
                 conversation.fail(error)
             }
-            turns = conversation.turns
+            turnsAsked = conversation.turns
             isAsking = conversation.isAsking
             askFailure = conversation.failure
         }

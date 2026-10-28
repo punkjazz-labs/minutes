@@ -14,6 +14,29 @@ public actor FluidAudioTranscriber: Transcribing {
     private var manager: AsrManager?
     private var models: AsrModels?
 
+    /// One load or one transcription at a time. An actor lets a second call
+    /// in at every await, so without this two write-ups running side by side
+    /// would load the model twice, or share one engine in the middle of a
+    /// file. Callers queue here instead, in the order they arrived.
+    private var busy = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    private func acquire() async {
+        if !busy {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    private func release() {
+        if waiting.isEmpty {
+            busy = false
+        } else {
+            waiting.removeFirst().resume()
+        }
+    }
+
     public init(model: ASRModelChoice = .v3) {
         self.choice = model
         self.version = (model == .v3) ? .v3 : .v2
@@ -39,6 +62,12 @@ public actor FluidAudioTranscriber: Transcribing {
     /// Downloads the model if it is missing, then loads it. The download is
     /// hundreds of megabytes and happens once.
     public func prepare(progress: (@Sendable (Double) -> Void)? = nil) async throws {
+        await acquire()
+        defer { release() }
+        try await prepareHoldingTheEngine(progress: progress)
+    }
+
+    private func prepareHoldingTheEngine(progress: (@Sendable (Double) -> Void)?) async throws {
         if manager != nil { return }
 
         var handler: ProgressHandler?
@@ -54,12 +83,14 @@ public actor FluidAudioTranscriber: Transcribing {
             self.manager = manager
         } catch {
             throw TranscriptionError.modelsMissing(
-                "The speech model could not be prepared: \(error.localizedDescription). Run 'make fetch-models' while online.")
+                "The speech model could not be prepared: \(error.localizedDescription). Download it from minutes settings while online.")
         }
     }
 
     public func transcribe(fileAt url: URL, track: AudioTrack) async throws -> TranscriptionOutput {
-        try await prepare(progress: nil)
+        await acquire()
+        defer { release() }
+        try await prepareHoldingTheEngine(progress: nil)
 
         guard let manager, let models else {
             throw TranscriptionError.modelsMissing("The speech model is not loaded.")

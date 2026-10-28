@@ -17,6 +17,11 @@ struct Checks {
             try await pipelineChecks(run)
             try await libraryChecks(run)
             await askChecks(run)
+            try captureLivenessChecks(run)
+            try await recoveryChecks(run)
+            try await writeUpFixChecks(run)
+            try libraryFixChecks(run)
+            libraryLayoutChecks(run)
         } catch {
             run.failed("a check threw: \(error.localizedDescription)")
         }

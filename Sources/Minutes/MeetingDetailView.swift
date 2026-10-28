@@ -54,62 +54,81 @@ enum AnchorLink {
     }
 }
 
-/// Notes on the left, transcript on the right, and a question box under the
-/// transcript. Every model line that rests on something said carries a chip
-/// back to the line it rests on.
+/// One meeting. The notes are the page, the way a document is: a title, the
+/// facts about the meeting as chips, what you typed, and what the model wrote,
+/// every line of it carrying a chip back to the words it rests on. Beside it,
+/// a panel that holds either the transcript or the questions asked about it.
 struct MeetingDetailView: View {
 
-    @StateObject private var model: MeetingDetailModel
+    enum Panel: String, CaseIterable, Identifiable {
+        case transcript = "Transcript"
+        case ask = "Ask"
+        var id: String { rawValue }
+    }
 
-    init(path: String) {
-        _model = StateObject(wrappedValue: MeetingDetailModel(path: path))
+    @StateObject private var model: MeetingDetailModel
+    private let onChanged: () -> Void
+    private let initialLine: Int?
+    @State private var panel: Panel
+    @State private var showsPanel = true
+
+    /// - Parameters:
+    ///   - onChanged: called when the notes on disk changed.
+    ///   - initialLine: a transcript line to open at, marked, the way a click
+    ///     on a chip marks it.
+    ///   - initialPanel: which side of the panel to open on.
+    init(
+        path: String,
+        settingsStore: any SettingsStoring = UserDefaultsSettingsStore(),
+        onChanged: @escaping () -> Void = {},
+        initialLine: Int? = nil,
+        initialPanel: Panel = .transcript
+    ) {
+        _model = StateObject(wrappedValue: MeetingDetailModel(path: path, settingsStore: settingsStore))
+        self.onChanged = onChanged
+        self.initialLine = initialLine
+        _panel = State(initialValue: initialPanel)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            detailHead
-            HLine()
-            HStack(spacing: 0) {
-                NotesPane(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        HStack(spacing: 0) {
+            NotesPane(model: model, showsPanel: $showsPanel)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            if showsPanel {
                 Rectangle().fill(Ink.line).frame(width: 1)
-                TranscriptPane(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                SidePanel(model: model, panel: $panel)
+                    .frame(width: 370)
+                    .transition(.move(edge: .trailing))
             }
         }
         .background(Ink.surface)
         .navigationTitle(model.title)
-        .onAppear { model.load() }
+        .onAppear {
+            model.onChanged = onChanged
+            model.load()
+            if let initialLine { model.jump(to: initialLine) }
+        }
         .environment(
             \.openURL,
             OpenURLAction { url in
                 guard let line = AnchorLink.line(from: url) else { return .systemAction }
-                model.jump(to: line)
+                show(line)
                 return .handled
             })
-    }
-
-    private var detailHead: some View {
-        HStack(spacing: 14) {
-            Text(model.title)
-                .font(.ui(15, weight: .semibold))
-                .foregroundStyle(Ink.ink)
-            Text(model.metaText)
-                .font(.ui(12))
-                .foregroundStyle(Ink.muted)
-            Spacer(minLength: 8)
-            if let failure = model.failure {
-                Text(failure)
-                    .font(.ui(Size.small))
-                    .foregroundStyle(Ink.fail)
-                    .lineLimit(2)
-            }
-            OutlineButton(title: model.isRewriting ? "Writing…" : "Generate notes", enabled: !model.isRewriting) {
-                model.rewriteNotes()
+        .onChange(of: model.hotLine) { _, line in
+            // Whatever asked for a line, a chip in the notes or in an answer,
+            // the transcript is where it is shown.
+            if line != nil {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    showsPanel = true
+                    panel = .transcript
+                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+    }
+
+    private func show(_ line: Int) {
+        model.jump(to: line)
     }
 }
 
@@ -118,28 +137,49 @@ struct MeetingDetailView: View {
 private struct NotesPane: View {
 
     @ObservedObject var model: MeetingDetailModel
+    @Binding var showsPanel: Bool
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 10) {
-                    PaneLabel(text: "Notes")
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Text("■ you").foregroundStyle(Ink.ink)
-                        Text("■ model").foregroundStyle(Ink.muted)
-                    }
-                    .font(.ui(Size.tiny))
-                }
-                .padding(.bottom, 10)
+                header
+                    .padding(.bottom, 26)
 
                 if !model.ownerLines.isEmpty {
+                    PaneLabel(text: "Your notes")
+                        .padding(.bottom, 8)
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(model.ownerLines.enumerated()), id: \.offset) { _, line in
                             bullet(line, color: Ink.ink, anchors: [])
                         }
                     }
-                    .padding(.bottom, 6)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Ink.panel))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1.5).fill(Ink.accentDeep).frame(width: 3).padding(.vertical, 8)
+                    }
+                    .padding(.bottom, 26)
+                }
+
+                HStack {
+                    PaneLabel(text: "Notes")
+                    Spacer()
+                    if !model.anchored.lines.isEmpty {
+                        Text("Each timestamp opens what was said")
+                            .font(.ui(Size.tiny))
+                            .foregroundStyle(Ink.faint)
+                    }
+                }
+                .padding(.bottom, 2)
+
+                if model.anchored.isEmpty {
+                    Text(model.notesPlaceholder)
+                        .font(.ui(Size.body))
+                        .foregroundStyle(Ink.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 10)
                 }
 
                 ForEach(model.anchored.lines) { line in
@@ -150,9 +190,83 @@ private struct NotesPane: View {
                     unanchoredBox
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 16)
+            .padding(.horizontal, 36)
+            .padding(.top, 16)
+            .padding(.bottom, 40)
+            .frame(maxWidth: 780, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Spacer()
+                actions
+            }
+            .padding(.bottom, 2)
+            Text(model.title)
+                .font(.title(30))
+                .foregroundStyle(Ink.ink)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let summary = model.record?.summary {
+                HStack(spacing: 8) {
+                    Chip(text: summary.dateText(), systemImage: "calendar")
+                    Chip(text: summary.lengthText, systemImage: "clock")
+                    Chip(
+                        text: summary.bothSidesRecorded ? "Both sides" : "Your side only",
+                        systemImage: summary.bothSidesRecorded ? "person.2.fill" : "person.fill")
+                    Chip(
+                        text: summary.notesState.chipText, systemImage: summary.notesState.symbol,
+                        color: summary.notesState.chipColor)
+                }
+            }
+            if let failure = model.failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .font(.ui(Size.small))
+                    .foregroundStyle(Ink.fail)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 6) {
+            Button {
+                model.rewriteNotes()
+            } label: {
+                HStack(spacing: 6) {
+                    if model.isRewriting {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(model.isRewriting ? "Writing…" : "Generate notes")
+                        .font(.ui(12, weight: .semibold))
+                        .fixedSize()
+                }
+                .foregroundStyle(model.isRewriting ? Ink.faint : Ink.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill(Ink.surface2)
+                        .overlay(Capsule().stroke(Ink.lineStrong)))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isRewriting)
+            .help("Ask the endpoint for the notes again, from the transcript and what you typed. The notes shown stay until it answers.")
+
+            IconButton(systemImage: "folder", help: "Show in Finder") { model.reveal() }
+            IconButton(
+                systemImage: "sidebar.right",
+                help: showsPanel ? "Hide the transcript panel" : "Show the transcript panel",
+                tint: showsPanel ? Ink.ink : Ink.muted
+            ) {
+                withAnimation(.easeOut(duration: 0.15)) { showsPanel.toggle() }
+            }
         }
     }
 
@@ -161,24 +275,25 @@ private struct NotesPane: View {
         switch line.kind {
         case .heading:
             Text(line.text)
-                .font(.ui(13, weight: .semibold))
+                .font(.ui(15, weight: .semibold))
                 .foregroundStyle(Ink.ink)
-                .padding(.top, 14)
-                .padding(.bottom, 6)
+                .padding(.top, 20)
+                .padding(.bottom, 8)
         case .bullet:
             bullet(line.text, color: Ink.muted, anchors: line.anchors)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
         case .paragraph:
             anchoredText(line.text, color: Ink.muted, anchors: line.anchors)
-                .padding(.bottom, 6)
+                .padding(.bottom, 8)
         }
     }
 
     private func bullet(_ text: String, color: Color, anchors: [NoteAnchor]) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("•")
-                .font(.ui(Size.row))
-                .foregroundStyle(Ink.faint)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Circle()
+                .fill(Ink.faint)
+                .frame(width: 4, height: 4)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
             anchoredText(text, color: color, anchors: anchors)
         }
     }
@@ -186,72 +301,127 @@ private struct NotesPane: View {
     private func anchoredText(_ text: String, color: Color, anchors: [NoteAnchor]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(text)
-                .font(.ui(Size.body))
+                .font(.ui(14.5))
                 .foregroundStyle(color)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
             ForEach(anchors) { anchor in
                 if let line = anchor.lineIndex {
                     AnchorChip(label: anchor.label, hot: model.hotLine == line) {
                         model.jump(to: line)
                     }
+                    .help("Show the line this rests on")
+                } else {
+                    // Written by the model and not in the transcript. Shown,
+                    // struck through, and pointing nowhere.
+                    Text(anchor.label)
+                        .font(.mono(Size.label))
+                        .strikethrough()
+                        .foregroundStyle(Ink.faint)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Ink.line, style: StrokeStyle(lineWidth: 1, dash: [2, 2])))
+                        .help("This timestamp is not in the transcript, so it points nowhere.")
                 }
             }
         }
     }
 
     private var unanchoredBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            PaneLabel(text: "Not in the transcript", color: Ink.warn)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
+                PaneLabel(text: "Not in the transcript", color: Ink.warn)
+            }
+            .foregroundStyle(Ink.warn)
+            Text("The model wrote these, and nothing in the transcript backs them.")
+                .font(.ui(Size.tiny))
+                .foregroundStyle(Ink.faint)
             ForEach(Array(model.anchored.unanchored.enumerated()), id: \.offset) { _, line in
-                Text("\"\(line)\"")
+                Text("\u{201C}\(line)\u{201D}")
                     .font(.ui(Size.row))
                     .foregroundStyle(Ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.clear)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.line)))
-        .overlay(alignment: .leading) {
-            Rectangle().fill(Ink.warn).frame(width: 3)
-        }
-        .padding(.top, 18)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Ink.warn.opacity(0.07)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.warn.opacity(0.25)))
+        .padding(.top, 24)
     }
 }
 
-// MARK: - Transcript and the question box
+// MARK: - The panel: transcript, or questions
 
-private struct TranscriptPane: View {
+private struct SidePanel: View {
+
+    @ObservedObject var model: MeetingDetailModel
+    @Binding var panel: MeetingDetailView.Panel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $panel) {
+                ForEach(MeetingDetailView.Panel.allCases) { item in
+                    Text(item == .ask && !model.turnsAsked.isEmpty ? "Ask (\(model.turnsAsked.count))" : item.rawValue)
+                        .tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            switch panel {
+            case .transcript: TranscriptPanel(model: model)
+            case .ask: AskPanel(model: model)
+            }
+        }
+        .background(Ink.panel)
+    }
+}
+
+private struct TranscriptPanel: View {
 
     @ObservedObject var model: MeetingDetailModel
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                PaneLabel(text: "Transcript")
-                Spacer()
-                WordButton(title: "Copy") { model.copyTranscript() }
+            HStack(spacing: 4) {
+                SearchField(
+                    prompt: "Find in transcript", text: $model.transcriptQuery, count: model.matchText,
+                    onSubmit: { model.nextMatch() })
+                if model.matches.count > 1 {
+                    IconButton(systemImage: "chevron.up", help: "Previous match") { model.previousMatch() }
+                    IconButton(systemImage: "chevron.down", help: "Next match") { model.nextMatch() }
+                }
+                IconButton(systemImage: "doc.on.doc", help: "Copy the transcript") { model.copyTranscript() }
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 16)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(model.transcript) { line in
-                            transcriptLine(line)
-                                .id(line.index)
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        if model.transcript.isEmpty {
+                            Text("This meeting has no transcript lines.")
+                                .font(.ui(Size.row))
+                                .foregroundStyle(Ink.faint)
+                                .padding(.top, 8)
+                        }
+                        ForEach(model.turns) { turn in
+                            turnView(turn)
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
+                    .padding(.vertical, 8)
                 }
                 .onChange(of: model.hotLine) { _, line in
                     guard let line else { return }
@@ -259,101 +429,205 @@ private struct TranscriptPane: View {
                         proxy.scrollTo(line, anchor: .center)
                     }
                 }
+                .onAppear {
+                    if let line = model.hotLine { proxy.scrollTo(line, anchor: .center) }
+                }
             }
-
-            askBox
         }
     }
 
-    private func transcriptLine(_ line: TranscriptLine) -> some View {
+    private func turnView(_ turn: TranscriptTurn) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                SpeakerBadge(speaker: turn.speaker, isOwner: turn.isOwner)
+                Text(turn.speaker)
+                    .font(.ui(Size.row, weight: .semibold))
+                    .foregroundStyle(turn.isOwner ? Ink.ink : Ink.them)
+                Text(Timecode.short(turn.timecode))
+                    .font(.mono(Size.tiny))
+                    .foregroundStyle(Ink.faint)
+            }
+            ForEach(turn.lines) { line in
+                transcriptLine(line, showsTime: line.index != turn.id)
+                    .id(line.index)
+            }
+        }
+    }
+
+    private func transcriptLine(_ line: TranscriptLine, showsTime: Bool) -> some View {
         let hot = model.hotLine == line.index
-        return HStack(alignment: .top, spacing: 10) {
-            Text(line.timecode)
-                .font(.mono(Size.tiny))
-                .foregroundStyle(Ink.faint)
-                .frame(width: 58, alignment: .leading)
-            Text(line.speaker)
-                .font(.ui(Size.tiny, weight: .semibold))
-                .foregroundStyle(line.isOwner ? Ink.muted : Ink.them)
-                .frame(width: 46, alignment: .leading)
-            Text(line.text)
-                .font(.ui(Size.row))
+        let matched = model.matches.contains(line.index)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(highlighted(line.text))
+                .font(.ui(Size.body))
                 .foregroundStyle(hot ? Ink.ink : Ink.muted)
+                .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            Text(Timecode.short(line.timecode))
+                .font(.mono(Size.label))
+                .foregroundStyle(hot ? Ink.accentDeep : Ink.faint.opacity(0.7))
+                .opacity(showsTime || hot ? 1 : 0)
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(hot ? Ink.hot : Color.clear)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(hot ? Ink.accentDeep : Color.clear)))
+            RoundedRectangle(cornerRadius: 7)
+                .fill(hot ? Ink.hot : (matched ? Ink.warn.opacity(0.07) : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(hot ? Ink.accentDeep : Color.clear)))
+        .padding(.leading, 20)
     }
 
-    private var askBox: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HLine()
-            VStack(alignment: .leading, spacing: 8) {
-                if !model.turns.isEmpty || model.askFailure != nil {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.turns) { turn in
+    /// The line with the words looked for marked, so a match is seen without
+    /// reading the whole line.
+    private func highlighted(_ text: String) -> AttributedString {
+        var out = AttributedString(text)
+        let needle = model.transcriptQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return out }
+        var searchStart = out.startIndex
+        while searchStart < out.endIndex,
+            let range = out[searchStart...].range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])
+        {
+            out[range].foregroundColor = Ink.ink
+            out[range].backgroundColor = Ink.warn.opacity(0.35)
+            searchStart = range.upperBound
+        }
+        return out
+    }
+}
+
+private struct AskPanel: View {
+
+    @ObservedObject var model: MeetingDetailModel
+
+    /// Questions most meetings are asked first. They go to the endpoint like
+    /// a typed one, and the answer is held to the transcript like any other.
+    private let suggestions = [
+        "What was decided?",
+        "What are the follow-ups, and who owns them?",
+        "What is still open?",
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if model.turnsAsked.isEmpty && !model.isAsking && model.askFailure == nil {
+                            intro
+                        }
+                        ForEach(model.turnsAsked) { turn in
                             Text(turn.question)
                                 .font(.ui(Size.row))
                                 .foregroundStyle(Ink.ink)
                                 .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10).fill(Ink.surface2))
+                                .padding(.vertical, 7)
+                                .background(RoundedRectangle(cornerRadius: 12).fill(Ink.surface2))
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                             Text(AnchorLink.attributed(turn.answer, transcript: model.transcript))
                                 .font(.ui(Size.row))
                                 .foregroundStyle(Ink.muted)
+                                .lineSpacing(2)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        if model.isAsking {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("Reading the transcript")
+                                    .font(.ui(Size.small))
+                                    .foregroundStyle(Ink.faint)
+                            }
                         }
                         if let failure = model.askFailure {
-                            Text(failure)
+                            Label(failure, systemImage: "exclamationmark.triangle.fill")
                                 .font(.ui(Size.row))
                                 .foregroundStyle(Ink.fail)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        Color.clear.frame(height: 1).id("end")
                     }
-                    .padding(.bottom, 2)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
                 }
-
-                HStack(spacing: 8) {
-                    TextField("Ask about this meeting", text: $model.question)
-                        .textFieldStyle(.plain)
-                        .font(.ui(Size.row))
-                        .foregroundStyle(Ink.ink)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Ink.bg)
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.lineStrong)))
-                        .onSubmit { model.ask() }
-                        .disabled(model.isAsking)
-
-                    Button(action: { model.ask() }) {
-                        Text("Ask")
-                            .font(.ui(Size.row, weight: .semibold))
-                            .foregroundStyle(Ink.accentInk)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Ink.accent))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.isAsking)
+                .onChange(of: model.turnsAsked.count) { _, _ in
+                    withAnimation { proxy.scrollTo("end", anchor: .bottom) }
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 12)
-            .padding(.bottom, 16)
-            .background(Ink.panel)
+
+            composer
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
         }
+    }
+
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Ask about this meeting")
+                .font(.ui(Size.body, weight: .semibold))
+                .foregroundStyle(Ink.ink)
+            Text("Answers come from the transcript only, with the time of each line they rest on. Nothing is kept after the app quits.")
+                .font(.ui(Size.small))
+                .foregroundStyle(Ink.faint)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(suggestions, id: \.self) { suggestion in
+                    Button {
+                        model.ask(suggestion)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                            Text(suggestion).font(.ui(Size.row))
+                        }
+                        .foregroundStyle(Ink.muted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Ink.surface2).overlay(Capsule().stroke(Ink.line)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .padding(.top, 6)
+    }
+
+    private var composer: some View {
+        HStack(spacing: 8) {
+            TextField(
+                "", text: $model.question,
+                prompt: Text("Ask about this meeting").foregroundStyle(Ink.faint)
+            )
+            .textFieldStyle(.plain)
+            .font(.ui(Size.row))
+            .foregroundStyle(Ink.ink)
+            .onSubmit { model.ask() }
+            .disabled(model.isAsking)
+
+            Button(action: { model.ask() }) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(canAsk ? Ink.accentInk : Ink.faint)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(canAsk ? Ink.accent : Ink.surface2))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canAsk)
+            .help("Ask. The answer comes from the transcript only.")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Ink.bg)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Ink.lineStrong)))
+    }
+
+    private var canAsk: Bool {
+        !model.isAsking && !model.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
