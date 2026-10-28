@@ -35,6 +35,8 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
 
     private let makeSource: @Sendable () -> any SystemAudioSource
     private let watchdogInterval: TimeInterval
+    private let starvationThreshold: TimeInterval
+    private let clock: TrackWriter.Clock
     private let watchesOutputDevice: Bool
     private let work = DispatchQueue(label: "minutes.system-audio.control")
     private let lock = NSLock()
@@ -54,6 +56,9 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
     ///   - policy: when to rebuild a tap that has gone quiet.
     ///   - watchdogInterval: how often to look. Zero means no timer, which is
     ///     how the checks drive the same code without waiting for real time.
+    ///   - starvationThreshold: seconds without any buffer at all, not even
+    ///     digital zero, before the tap is treated as stopped and rebuilt.
+    ///   - clock: the clock the track is kept on.
     ///   - watchesOutputDevice: whether to ask Core Audio to report output
     ///     device changes. False in the checks, so nothing in the default suite
     ///     touches the audio hardware at all.
@@ -61,11 +66,15 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
     public init(
         policy: TapRebuildPolicy = TapRebuildPolicy(),
         watchdogInterval: TimeInterval = 5,
+        starvationThreshold: TimeInterval = 5,
+        clock: @escaping TrackWriter.Clock = TrackWriter.systemClock,
         watchesOutputDevice: Bool = true,
         source: @escaping @Sendable () -> any SystemAudioSource = { CoreAudioProcessTap() }
     ) {
         self.policy = policy
         self.watchdogInterval = watchdogInterval
+        self.starvationThreshold = starvationThreshold
+        self.clock = clock
         self.watchesOutputDevice = watchesOutputDevice
         self.makeSource = source
     }
@@ -90,11 +99,22 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         return noteLines
     }
 
-    /// How many times the tap was torn down and built again this meeting.
+    /// How many times the tap was torn down and built again this meeting
+    /// because it went quiet or stopped delivering.
     public var rebuildCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return policy.rebuildCount
+        return policy.totalRebuilds
+    }
+
+    /// True while the tap has handed over nothing at all, not even digital
+    /// zero, for longer than the starvation threshold.
+    public var isStarved: Bool {
+        lock.lock()
+        let writer = recording ? self.writer : nil
+        lock.unlock()
+        guard let writer else { return false }
+        return writer.secondsSinceLastFeed >= starvationThreshold
     }
 
     /// How many times the Mac changed output device mid-meeting.
@@ -116,7 +136,7 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         // file to the second meeting.
         if alreadyRecording { throw CaptureError.alreadyRecording }
 
-        let writer = try TrackWriter(url: url)
+        let writer = try TrackWriter(url: url, clock: clock)
 
         lock.lock()
         self.writer = writer
@@ -210,12 +230,21 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
             return
         }
         let signal = writer.signal
-        let wanted = policy.shouldRebuild(signal: signal)
+        let silentFor = writer.secondsSinceLastFeed
+        let quiet = policy.shouldRebuild(signal: signal)
+        let stopped =
+            !quiet
+            && policy.shouldRebuild(
+                signal: signal, secondsWithoutAudio: silentFor, threshold: starvationThreshold)
         let alreadySaid = exhaustedReported
         lock.unlock()
 
-        if wanted {
+        if quiet {
             rebuild(because: .theTrackWentQuiet)
+            return
+        }
+        if stopped {
+            rebuild(because: .theTapStoppedDelivering(seconds: silentFor))
             return
         }
 
@@ -241,9 +270,11 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         lock.lock()
         let exhausted = policy.isExhausted
         let threshold = policy.silenceThreshold
+        let silentFor = writer?.secondsSinceLastFeed ?? 0
         lock.unlock()
         return exhausted
-            && signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: threshold)
+            && (signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: threshold)
+                || silentFor >= starvationThreshold)
     }
 
     /// Rebuilds around whatever the Mac is now playing through. Public for the
@@ -261,9 +292,28 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
         rebuild(because: .theOutputDeviceChanged(count))
     }
 
+    /// Rebuilds around the same device after its sample rate changed, which a
+    /// headset does when a call switches it into its call mode. The tap's
+    /// format is read when the tap is built, so a tap left in place would hand
+    /// over audio described at the old rate. Public for the checks.
+    public func rebuildForOutputFormatChange() {
+        lock.lock()
+        guard recording else {
+            lock.unlock()
+            return
+        }
+        deviceChanges += 1
+        let count = deviceChanges
+        lock.unlock()
+
+        rebuild(because: .theOutputFormatChanged(count))
+    }
+
     private enum RebuildReason {
         case theTrackWentQuiet
+        case theTapStoppedDelivering(seconds: TimeInterval)
         case theOutputDeviceChanged(Int)
+        case theOutputFormatChanged(Int)
     }
 
     private func rebuild(because reason: RebuildReason) {
@@ -280,7 +330,15 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
             let notice = policy.rebuildNotice(seconds: seconds)
             lock.unlock()
             append(notice)
-        case .theOutputDeviceChanged:
+        case .theTapStoppedDelivering(let seconds):
+            policy.recordRebuild(signal: signal)
+            let attempt = policy.rebuildCount
+            let limit = policy.maximumRebuilds
+            lock.unlock()
+            append(
+                "No audio has arrived from the system audio tap for \(Int(seconds.rounded())) seconds, not even silence. Rebuilding the tap, attempt \(attempt) of \(limit)."
+            )
+        case .theOutputDeviceChanged, .theOutputFormatChanged:
             lock.unlock()
         }
 
@@ -294,13 +352,20 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
 
         do {
             try startSource()
-            if case .theOutputDeviceChanged(let count) = reason {
-                lock.lock()
-                let device = source?.outputDeviceName ?? "the new output device"
-                lock.unlock()
+            lock.lock()
+            let device = source?.outputDeviceName ?? "the new output device"
+            lock.unlock()
+            switch reason {
+            case .theOutputDeviceChanged(let count):
                 append(
                     "The Mac changed the device it plays through, change \(count) this meeting. The tap was rebuilt around \(device)."
                 )
+            case .theOutputFormatChanged(let count):
+                append(
+                    "The output device changed its sample rate, change \(count) this meeting. The tap was rebuilt around \(device) so the audio is read at the rate it now plays."
+                )
+            case .theTrackWentQuiet, .theTapStoppedDelivering:
+                break
             }
         } catch {
             lock.lock()
@@ -356,8 +421,11 @@ public final class SystemAudioCapture: AudioCapturing, @unchecked Sendable {
     private func startDeviceWatcher() {
         guard watchesOutputDevice else { return }
         let watcher = DefaultOutputDeviceWatcher(queue: work)
-        let started = watcher.start { [weak self] in
-            self?.rebuildForOutputDeviceChange()
+        let started = watcher.start { [weak self] change in
+            switch change {
+            case .device: self?.rebuildForOutputDeviceChange()
+            case .sampleRate: self?.rebuildForOutputFormatChange()
+            }
         }
         if started {
             deviceWatcher = watcher

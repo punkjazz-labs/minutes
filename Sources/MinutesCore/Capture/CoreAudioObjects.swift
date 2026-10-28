@@ -124,38 +124,87 @@ struct CoreAudioFailure: Error, LocalizedError {
     }
 }
 
-/// Watches which device macOS plays through, because AirPods connecting in the
-/// middle of a meeting changes it and the aggregate device has to be rebuilt
-/// around the new one.
+/// Watches which device macOS plays through, and the sample rate it plays at,
+/// because both change under a running meeting and the aggregate device has to
+/// be rebuilt around the change.
+///
+/// AirPods connecting changes the device. A call switching a Bluetooth headset
+/// into its call mode keeps the device and changes its sample rate, and the
+/// tap's format was read when the tap was built, so that needs a rebuild too.
 final class DefaultOutputDeviceWatcher: @unchecked Sendable {
 
+    enum Change: Sendable {
+        case device
+        case sampleRate
+    }
+
     private let queue: DispatchQueue
-    private var listener: AudioObjectPropertyListenerBlock?
-    private var propertyAddress = CoreAudioObject.address(kAudioHardwarePropertyDefaultSystemOutputDevice)
+    /// The rate listener moves on the watcher's queue while a stop can arrive
+    /// from the main thread, so the rate state is only touched under this.
+    private let rateLock = NSLock()
+    private var deviceListener: AudioObjectPropertyListenerBlock?
+    private var rateListener: AudioObjectPropertyListenerBlock?
+    private var rateDevice = CoreAudioObject.unknown
+    private var deviceAddress = CoreAudioObject.address(kAudioHardwarePropertyDefaultSystemOutputDevice)
+    private var rateAddress = CoreAudioObject.address(kAudioDevicePropertyNominalSampleRate)
+    private var onChange: (@Sendable (Change) -> Void)?
 
     init(queue: DispatchQueue) {
         self.queue = queue
     }
 
     /// Calls `onChange` on the watcher's queue whenever the default output
-    /// device changes. Returns false when macOS refused the listener, so the
-    /// caller can say so rather than assume it is being watched.
+    /// device or its sample rate changes. Returns false when macOS refused the
+    /// device listener, so the caller can say so rather than assume it is being
+    /// watched. A refused rate listener is not fatal: the device listener and
+    /// the level checks still run.
     @discardableResult
-    func start(onChange: @escaping @Sendable () -> Void) -> Bool {
-        guard listener == nil else { return true }
-        let block: AudioObjectPropertyListenerBlock = { _, _ in onChange() }
+    func start(onChange: @escaping @Sendable (Change) -> Void) -> Bool {
+        guard deviceListener == nil else { return true }
+        self.onChange = onChange
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.watchRate()
+            onChange(.device)
+        }
         let status = AudioObjectAddPropertyListenerBlock(
-            CoreAudioObject.system, &propertyAddress, queue, block)
+            CoreAudioObject.system, &deviceAddress, queue, block)
         guard status == noErr else { return false }
-        listener = block
+        deviceListener = block
+        watchRate()
         return true
     }
 
+    /// Moves the rate listener to whichever device is the default now.
+    /// Runs on the watcher's queue, or before the device listener exists.
+    private func watchRate() {
+        rateLock.lock()
+        defer { rateLock.unlock() }
+        stopWatchingRateLocked()
+        guard let device = try? CoreAudioObject.defaultOutputDevice(), device != CoreAudioObject.unknown,
+            let onChange
+        else { return }
+        let block: AudioObjectPropertyListenerBlock = { _, _ in onChange(.sampleRate) }
+        guard AudioObjectAddPropertyListenerBlock(device, &rateAddress, queue, block) == noErr else { return }
+        rateListener = block
+        rateDevice = device
+    }
+
+    private func stopWatchingRateLocked() {
+        guard let rateListener else { return }
+        AudioObjectRemovePropertyListenerBlock(rateDevice, &rateAddress, queue, rateListener)
+        self.rateListener = nil
+        rateDevice = CoreAudioObject.unknown
+    }
+
     func stop() {
-        guard let listener else { return }
+        rateLock.lock()
+        stopWatchingRateLocked()
+        onChange = nil
+        rateLock.unlock()
+        guard let deviceListener else { return }
         AudioObjectRemovePropertyListenerBlock(
-            CoreAudioObject.system, &propertyAddress, queue, listener)
-        self.listener = nil
+            CoreAudioObject.system, &deviceAddress, queue, deviceListener)
+        self.deviceListener = nil
     }
 
     deinit { stop() }

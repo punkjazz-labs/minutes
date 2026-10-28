@@ -148,6 +148,57 @@ public enum WAVReader {
     }
 
     public static func read(data: Data) throws -> Audio {
+        let layout = try parse(data)
+        var samples = [Float]()
+        samples.reserveCapacity(layout.pcm.count / 2)
+        data[layout.pcm].withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var index = 0
+            while index + 1 < bytes.count {
+                let value = Int16(bitPattern: UInt16(bytes[index]) | (UInt16(bytes[index + 1]) << 8))
+                samples.append(Float(value) / 32_768.0)
+                index += 2
+            }
+        }
+        return Audio(samples: samples, sampleRate: layout.sampleRate, channels: layout.channels)
+    }
+
+    /// The level statistics and the length of a recording, measured without
+    /// holding the whole of it in memory as floats. An hour of a meeting is
+    /// two hundred megabytes as floats and a fraction of that as it sits on
+    /// disk, and recovering a recording after a crash only needs the levels.
+    public static func measure(url: URL) throws -> (signal: SignalCheck, duration: TimeInterval) {
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
+        let layout = try parse(data)
+        var signal = SignalCheck()
+        let block = 16_000
+        var chunk = [Float]()
+        chunk.reserveCapacity(block)
+        data[layout.pcm].withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var index = 0
+            while index + 1 < bytes.count {
+                let value = Int16(bitPattern: UInt16(bytes[index]) | (UInt16(bytes[index + 1]) << 8))
+                chunk.append(Float(value) / 32_768.0)
+                if chunk.count == block {
+                    signal.observe(chunk)
+                    chunk.removeAll(keepingCapacity: true)
+                }
+                index += 2
+            }
+        }
+        if !chunk.isEmpty { signal.observe(chunk) }
+        let frames = signal.frameCount / max(1, layout.channels)
+        return (signal, Double(frames) / Double(layout.sampleRate))
+    }
+
+    private struct Layout {
+        let sampleRate: Int
+        let channels: Int
+        let pcm: Range<Data.Index>
+    }
+
+    private static func parse(_ data: Data) throws -> Layout {
         guard data.count >= 12 else { throw WAVError.truncated }
         guard string(data, 0, 4) == "RIFF", string(data, 8, 4) == "WAVE" else { throw WAVError.notRIFF }
 
@@ -156,7 +207,7 @@ public enum WAVReader {
         var channels = 0
         var bitsPerSample = 0
         var formatTag = 0
-        var pcm: Data?
+        var pcm: Range<Data.Index>?
 
         while offset + 8 <= data.count {
             let chunkID = string(data, offset, 4)
@@ -178,7 +229,7 @@ public enum WAVReader {
                 bitsPerSample = Int(uint16(data, body + 14))
             } else if chunkID == "data" {
                 let available = min(chunkSize, data.count - body)
-                pcm = data.subdata(in: body..<(body + available))
+                pcm = (data.startIndex + body)..<(data.startIndex + body + available)
             }
 
             offset = body + chunkSize + (chunkSize % 2)
@@ -188,19 +239,7 @@ public enum WAVReader {
         guard formatTag == 1 else { throw WAVError.unsupportedFormat("format tag \(formatTag), only PCM is read") }
         guard bitsPerSample == 16 else { throw WAVError.unsupportedFormat("\(bitsPerSample) bits per sample") }
         guard channels > 0, sampleRate > 0 else { throw WAVError.unsupportedFormat("channel or rate field is zero") }
-
-        var samples = [Float]()
-        samples.reserveCapacity(pcm.count / 2)
-        pcm.withUnsafeBytes { raw in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            var index = 0
-            while index + 1 < bytes.count {
-                let value = Int16(bitPattern: UInt16(bytes[index]) | (UInt16(bytes[index + 1]) << 8))
-                samples.append(Float(value) / 32_768.0)
-                index += 2
-            }
-        }
-        return Audio(samples: samples, sampleRate: sampleRate, channels: channels)
+        return Layout(sampleRate: sampleRate, channels: channels, pcm: pcm)
     }
 
     private static func string(_ data: Data, _ offset: Int, _ length: Int) -> String {

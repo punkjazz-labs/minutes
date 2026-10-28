@@ -154,11 +154,22 @@ public struct MeetingPipeline: Sendable {
                     NotesRequest(title: title, ownerNotes: ownerNotes, transcript: transcript.plainText))
                 notesBody = result.markdown
                 log("Notes written.")
-            } catch let error as NotesError {
+            } catch {
+                // Any refusal from the endpoint costs the notes and nothing
+                // else. Catching one error type let every other kind stop the
+                // write-up before notes.md and meta.json existed.
                 pendingReason = error.localizedDescription
                 log(pendingReason!)
             }
         }
+
+        // One decision about the audio, read by both the record and the
+        // delete, so meta.json can never say the audio went when it stayed.
+        // A track the speech engine refused, or a recording in which it found
+        // no words at all, is the only record of what was said, so it stays.
+        let deletesAudio =
+            !settings.keepAudioAfterTranscription && !transcript.segments.isEmpty && failedTracks.isEmpty
+        let audioKept = !deletesAudio && !recordedTracks.isEmpty
 
         try store.writeNotes(
             title: title,
@@ -189,21 +200,24 @@ public struct MeetingPipeline: Sendable {
             tracksSilent: silentTracks.map { $0.rawValue },
             tracksNotTranscribed: failedTracks.map { $0.track.rawValue },
             transcriptionFailureReason: failedTracks.first?.reason,
-            audioKept: settings.keepAudioAfterTranscription || !failedTracks.isEmpty,
+            audioKept: audioKept,
             syncService: store.syncService
         )
         try store.writeMeta(meta, to: directory)
 
         // Audio goes unless the owner asked to keep it, and only once the
-        // transcript is on disk. A track the speech engine refused has no
-        // transcript, so its recording is the only record of it and it stays.
-        if !settings.keepAudioAfterTranscription && !transcript.segments.isEmpty && failedTracks.isEmpty {
+        // transcript is on disk.
+        if deletesAudio {
             try store.deleteAudio(in: directory)
             log("Audio deleted. The transcript is what remains.")
+        } else if !audioKept {
+            // Every track was silent and discarded, so there is nothing to keep.
         } else if settings.keepAudioAfterTranscription {
             log("Audio kept, because the setting says to keep it.")
         } else if !failedTracks.isEmpty {
             log("Audio kept, because the speech engine could not read it and the recording is all there is.")
+        } else {
+            log("Audio kept, because no speech was recognised in it and the recording is all there is.")
         }
 
         return PipelineOutcome(

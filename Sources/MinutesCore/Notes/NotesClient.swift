@@ -32,6 +32,9 @@ public enum NotesError: Error, LocalizedError {
     case badURL(String)
     case transportSecurity
     case requestTimedOut
+    /// The secure connection failed before any answer: a certificate the Mac
+    /// does not trust, or a handshake that broke. Not a machine that is off.
+    case secureConnectionFailed
 
     public var errorDescription: String? {
         switch self {
@@ -49,6 +52,8 @@ public enum NotesError: Error, LocalizedError {
             return "macOS blocked this connection. Use HTTPS or allow local networking in the app."
         case .requestTimedOut:
             return "Notes request timed out. Try again."
+        case .secureConnectionFailed:
+            return "The secure connection to the notes service failed. Check its certificate."
         }
     }
 
@@ -57,7 +62,7 @@ public enum NotesError: Error, LocalizedError {
     public var isRetryable: Bool {
         switch self {
         case .unreachable, .server, .requestTimedOut: return true
-        case .unauthorized, .emptyResponse, .badURL, .transportSecurity: return false
+        case .unauthorized, .emptyResponse, .badURL, .transportSecurity, .secureConnectionFailed: return false
         }
     }
 }
@@ -199,6 +204,10 @@ public struct OpenAICompatibleNotesClient: NotesGenerating {
                 throw NotesError.transportSecurity
             case .timedOut:
                 throw NotesError.requestTimedOut
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .clientCertificateRejected,
+                .clientCertificateRequired:
+                throw NotesError.secureConnectionFailed
             default:
                 throw NotesError.unreachable(baseURL)
             }

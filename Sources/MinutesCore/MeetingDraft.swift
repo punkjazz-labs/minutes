@@ -3,14 +3,17 @@ import Foundation
 /// What the owner typed for a meeting: the title, and the bullets that become
 /// the prompt and are kept word for word in `notes.md`.
 ///
-/// The draft belongs to one meeting. It is cleared when that meeting is written
-/// up, and at no other time.
+/// The draft belongs to one meeting. It is cleared when that meeting is handed
+/// to the write-up, and at no other time.
 ///
 /// Not clearing it puts one meeting's private words into a second meeting's
 /// folder, sends them to the model a second time, and writes the second meeting
-/// under a title that is not its own. Clearing it any earlier loses words that
-/// exist nowhere else yet: what a person types before pressing Record, and what
-/// a person typed for a meeting that could not be written up.
+/// under a title that is not its own. Clearing it before the words are on disk
+/// loses words that exist nowhere else yet, such as what a person types before
+/// pressing Record. While a meeting records, the draft is kept in that
+/// meeting's recording session on disk, so by the time Stop hands it to the
+/// write-up the words are safe there, a write-up that fails keeps them with
+/// the recording it failed on, and the next meeting can start at once.
 public struct MeetingDraft: Sendable, Equatable {
 
     public var title: String
@@ -32,9 +35,9 @@ public struct MeetingDraft: Sendable, Equatable {
         title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : title
     }
 
-    /// What is left after a meeting is written up: nothing. Both fields are in
-    /// that meeting's folder now, the title in `meta.json` and the bullets in
-    /// `bullets.md`.
+    /// What is left after a meeting is handed to the write-up: nothing. Both
+    /// fields are in that meeting's recording session now, and end up in its
+    /// folder, the title in `meta.json` and the bullets in `bullets.md`.
     public mutating func clearAfterWriteUp() {
         self = MeetingDraft()
     }

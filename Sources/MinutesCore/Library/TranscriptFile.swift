@@ -58,3 +58,15 @@ public enum TranscriptFile {
         lines.map { "[\($0.timecode)] \($0.speaker): \($0.text)" }.joined(separator: "\n")
     }
 }
+
+extension TranscriptFile {
+    /// The lines that contain the words looked for, ignoring case and accents,
+    /// in the order they were said.
+    public static func matches(_ query: String, in lines: [TranscriptLine]) -> [Int] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        return lines
+            .filter { $0.text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+            .map(\.index)
+    }
+}

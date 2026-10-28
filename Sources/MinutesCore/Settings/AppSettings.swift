@@ -62,6 +62,25 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.asrModel = asrModel
     }
 
+    /// Reads each field on its own, so a field this version does not know,
+    /// or a field an older version never wrote, costs that field and not the
+    /// rest. Decoding the blob all or nothing turned one new setting into a
+    /// silent reset of every setting, notes folder included, and the next
+    /// meeting was written somewhere the owner never chose.
+    public init(from decoder: Decoder) throws {
+        let fallback = AppSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func read<Value: Decodable>(_ key: CodingKeys, _ defaultValue: Value) -> Value {
+            ((try? container.decodeIfPresent(Value.self, forKey: key)) ?? nil) ?? defaultValue
+        }
+        self.init(
+            notesBaseURL: read(.notesBaseURL, fallback.notesBaseURL),
+            notesModel: read(.notesModel, fallback.notesModel),
+            notesFolderPath: read(.notesFolderPath, fallback.notesFolderPath),
+            keepAudioAfterTranscription: read(.keepAudioAfterTranscription, fallback.keepAudioAfterTranscription),
+            asrModel: read(.asrModel, fallback.asrModel))
+    }
+
     public var notesFolderURL: URL {
         URL(fileURLWithPath: (notesFolderPath as NSString).expandingTildeInPath, isDirectory: true)
     }

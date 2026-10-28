@@ -10,13 +10,20 @@ public struct SignalCheck: Sendable, Equatable {
     public private(set) var sumOfSquares: Double = 0
     /// Frames seen since the last non-zero sample.
     public private(set) var trailingZeroFrames: Int = 0
+    /// The loudest recent sample, falling by half every quarter of a second
+    /// of audio. This is what a meter shows: the peak of the whole capture
+    /// only ever rises, so a meter driven by it stays full after one cough and
+    /// cannot show a microphone that went quiet.
+    public private(set) var recentPeak: Float = 0
 
     public init() {}
 
     public mutating func observe(_ samples: [Float]) {
+        var blockPeak: Float = 0
         for sample in samples {
             let magnitude = abs(sample)
             if magnitude > peak { peak = magnitude }
+            if magnitude > blockPeak { blockPeak = magnitude }
             sumOfSquares += Double(sample) * Double(sample)
             if sample == 0 {
                 trailingZeroFrames += 1
@@ -25,6 +32,8 @@ public struct SignalCheck: Sendable, Equatable {
             }
         }
         frameCount += samples.count
+        let decayed = recentPeak * Float(pow(0.5, Double(samples.count) / 4_000))
+        recentPeak = max(blockPeak, decayed)
     }
 
     public var rms: Float {
@@ -52,6 +61,7 @@ public struct SignalCheck: Sendable, Equatable {
         return Double(trailingZeroFrames) / sampleRate >= seconds
     }
 
-    /// Level in 0...1 for a meter, from the peak of the whole capture.
-    public var meterLevel: Float { min(1, peak) }
+    /// Level in 0...1 for a meter, from the recent peak, so it falls when the
+    /// sound does.
+    public var meterLevel: Float { min(1, recentPeak) }
 }

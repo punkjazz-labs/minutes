@@ -98,10 +98,38 @@ public struct NotesDocument: Sendable, Equatable {
             let key = String(raw[..<colon]).trimmingCharacters(in: .whitespaces)
             var value = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
-                value = String(value.dropFirst().dropLast()).replacingOccurrences(of: "\\\"", with: "\"")
+                value = unescape(String(value.dropFirst().dropLast()))
             }
             found[key] = value
         }
         return found
+    }
+
+    /// The escapes the writer uses, read back in one pass so an escaped
+    /// backslash is never mistaken for the start of another escape.
+    private static func unescape(_ text: String) -> String {
+        var out = ""
+        var escaping = false
+        for character in text {
+            if escaping {
+                switch character {
+                case "n": out.append("\n")
+                case "r": out.append("\r")
+                case "\\", "\"": out.append(character)
+                // Not an escape this app writes. A file from an older version
+                // wrote backslashes bare, so the backslash is kept.
+                default:
+                    out.append("\\")
+                    out.append(character)
+                }
+                escaping = false
+            } else if character == "\\" {
+                escaping = true
+            } else {
+                out.append(character)
+            }
+        }
+        if escaping { out.append("\\") }
+        return out
     }
 }

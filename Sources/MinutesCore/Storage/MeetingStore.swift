@@ -286,8 +286,16 @@ public struct MeetingStore: Sendable {
             .map(MeetingDirectory.init(url:))
     }
 
+    /// A YAML double-quoted scalar. The backslash goes first, because every
+    /// other escape adds one, and a line break is escaped rather than written,
+    /// because the front matter is one `key: value` per line.
     private func yamlString(_ value: String) -> String {
-        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        let escaped =
+            value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
         return "\"\(escaped)\""
     }
 }

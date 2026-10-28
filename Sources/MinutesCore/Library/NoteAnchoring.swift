@@ -215,18 +215,22 @@ public enum NoteAnchoring {
 
             // The line the model wrote is the quoted text, so it is also what
             // decides which transcript line the timestamp points at.
-            let resolved = timecodes.compactMap { code -> NoteAnchor? in
-                guard let index = lineIndex(for: code, quoting: text, in: candidates) else { return nil }
-                return NoteAnchor(timecode: code, lineIndex: index)
+            let anchors = timecodes.map { code in
+                NoteAnchor(timecode: code, lineIndex: lineIndex(for: code, quoting: text, in: candidates))
             }
 
-            if !timecodes.isEmpty && resolved.isEmpty {
+            if !anchors.isEmpty && !anchors.contains(where: \.isResolved) {
                 unanchored.append(text)
                 continue
             }
 
+            // A line with one timestamp that holds and one that does not keeps
+            // both. The one that does not becomes a chip that points nowhere
+            // and says so, rather than vanishing from the line, because a
+            // timestamp the model wrote and the transcript lacks is a fact the
+            // owner should see.
             lines.append(
-                AnchoredLine(id: nextID, kind: isBullet ? .bullet : .paragraph, text: text, anchors: resolved))
+                AnchoredLine(id: nextID, kind: isBullet ? .bullet : .paragraph, text: text, anchors: anchors))
             nextID += 1
         }
 

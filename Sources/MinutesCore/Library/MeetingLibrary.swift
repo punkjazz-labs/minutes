@@ -88,7 +88,10 @@ public struct MeetingLibrary: Sendable {
 
     /// Titles, notes and transcripts. A title match is a hit on its own; a body
     /// match brings back the words around it.
-    public func search(_ query: String) throws -> [MeetingSearchHit] {
+    ///
+    /// Pass the same cache to every search from one window, so a keystroke
+    /// reads only the files that changed since the last one.
+    public func search(_ query: String, cache: MeetingTextCache = MeetingTextCache()) throws -> [MeetingSearchHit] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let all = try meetings()
         guard !needle.isEmpty else { return all.map { MeetingSearchHit(meeting: $0, snippet: nil) } }
@@ -96,10 +99,15 @@ public struct MeetingLibrary: Sendable {
         return all.compactMap { meeting in
             // What was said and what was written, not the front matter and the
             // provenance lines around them, so a snippet is always words from
-            // the meeting.
-            let spoken = TranscriptFile.plainText(TranscriptFile.lines(at: meeting.directory.transcriptURL))
-            let document = NotesDocument.parse(at: meeting.directory.notesURL)
-            let written = [document?.ownerText, document?.modelText].compactMap { $0 }.joined(separator: "\n")
+            // the meeting. Who said it stays; the timecodes do not, because a
+            // snippet is read as speech and a row of brackets is not.
+            let spoken = cache.text(at: meeting.directory.transcriptURL) { url in
+                TranscriptFile.lines(at: url).map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+            }
+            let written = cache.text(at: meeting.directory.notesURL) { url in
+                let document = NotesDocument.parse(at: url)
+                return [document?.ownerText, document?.modelText].compactMap { $0 }.joined(separator: "\n")
+            }
 
             let snippet =
                 MeetingSearch.snippet(for: needle, in: spoken)
@@ -151,6 +159,15 @@ public struct MeetingLibrary: Sendable {
             meta.title = trimmed
             try? store.writeMeta(meta, to: moved)
         } else {
+            // A meta.json that is there and cannot be read is still the record
+            // of what ran where. Writing the smallest honest one over it would
+            // throw that record away for a title, so it is set aside first,
+            // byte for byte, beside the new one.
+            if FileManager.default.fileExists(atPath: moved.metaURL.path) {
+                let kept = moved.url.appendingPathComponent("meta.unreadable.json")
+                try? FileManager.default.removeItem(at: kept)
+                try FileManager.default.moveItem(at: moved.metaURL, to: kept)
+            }
             // A meeting written by an older version, or one whose pipeline
             // stopped before meta.json, has no file that records a title. The
             // front matter of notes.md still holds the old one, so without this
