@@ -26,10 +26,22 @@ final class RecordingController: ObservableObject {
     @Published private(set) var systemLevel: Float = 0
     @Published private(set) var isTestingEndpoint = false
     @Published private(set) var settingsMessage: String?
+    @Published private(set) var microphoneStarved = false
+    @Published private(set) var systemAudioStarved = false
+    /// Recordings an earlier run left behind without writing them up.
+    @Published private(set) var recoverable: [RecoverableRecording] = []
+    /// Meetings being written up in the background, oldest first. Recording
+    /// the next meeting does not wait for them.
+    @Published private(set) var writingUp: [RunningWriteUp] = []
+
+    struct RunningWriteUp: Identifiable, Equatable {
+        let id: String
+        let title: String
+    }
 
     /// What the owner typed for the meeting being recorded now, or for the one
-    /// about to be recorded. Cleared when a meeting is written up and never
-    /// before that.
+    /// about to be recorded. Kept on disk with the recording while it runs,
+    /// and cleared when Stop hands it to the write-up.
     @Published var draft = MeetingDraft()
     @Published var settings: AppSettings
     @Published var apiKeyField: String = ""
@@ -42,9 +54,15 @@ final class RecordingController: ObservableObject {
     private var transcriber: FluidAudioTranscriber
     private var ticker: Timer?
     private var startedAt: Date?
-    private var recordingURL: URL?
+    private let sessionsRoot: URL
+    /// The meeting being recorded, kept where a crash cannot take it.
+    private var session: RecordingSession?
+    private var savedDraft = MeetingDraft()
     private var systemAudioRunning = false
     private var systemNotesShown = 0
+    private var microphoneNotesShown = 0
+    private var lastMicrophoneFrames = 0
+    private var lastSystemFrames = 0
     /// Settings, transcriber, and notes client captured before the first await
     /// of a start, so the pipeline runs against what the meeting began with.
     private var sessionSettings: AppSettings?
@@ -60,10 +78,12 @@ final class RecordingController: ObservableObject {
 
     init(
         settingsStore: any SettingsStoring = UserDefaultsSettingsStore(),
-        keyStore: any APIKeyStoring = KeychainAPIKeyStore()
+        keyStore: any APIKeyStoring = KeychainAPIKeyStore(),
+        sessionsRoot: URL = RecordingSession.defaultRoot
     ) {
         self.settingsStore = settingsStore
         self.keyStore = keyStore
+        self.sessionsRoot = sessionsRoot
         let loaded = settingsStore.load()
         self.settings = loaded
         self.transcriber = FluidAudioTranscriber(model: loaded.asrModel)
@@ -71,6 +91,7 @@ final class RecordingController: ObservableObject {
         self.apiKeyField = keyStore.readKey() ?? ""
         self.microphonePermission = MicrophoneCapture.permissionState
         refreshDraftTitle()
+        refreshRecoverable()
     }
 
     // MARK: - Permissions and settings locking
@@ -102,7 +123,7 @@ final class RecordingController: ObservableObject {
 
     var settingsLocked: Bool {
         state.phase == .starting || state.isRecording || state.phase.isBusy
-            || modelDownloadProgress != nil
+            || modelDownloadProgress != nil || !writingUp.isEmpty
     }
 
     // MARK: - Facts shown on screen
@@ -120,6 +141,9 @@ final class RecordingController: ObservableObject {
         guard systemAudioRunning else {
             return
                 "The system audio tap is not running, so only your side of this meeting is being recorded."
+        }
+        if systemAudioStarved {
+            return "The system audio tap stopped delivering audio. minutes is rebuilding it."
         }
         if systemAudioSilence {
             return
@@ -155,19 +179,30 @@ final class RecordingController: ObservableObject {
             }
             if let error = userError { return error }
             if !modelReady { return "Download the speech model in Settings" }
+            if let writing = writingUpLine { return writing }
             if let notice = completionNotice { return notice }
             return "Ready"
         case .starting:
             return "Starting…"
         case .recording:
+            if microphoneStarved { return "No audio from the microphone · reopening it" }
             return capturedSilence ? "No microphone signal" : "Recording"
         case .working:
             return "Processing…"
         case .finished:
+            if let writing = writingUpLine { return writing }
             if let notice = completionNotice { return notice }
             if let error = userError { return error }
             return "Saved"
         }
+    }
+
+    /// What is being written up behind the next meeting, if anything.
+    private var writingUpLine: String? {
+        guard let first = writingUp.first else { return nil }
+        return writingUp.count == 1
+            ? "Writing up \u{201C}\(first.title)\u{201D}…"
+            : "Writing up \(writingUp.count) meetings…"
     }
 
     // MARK: - Settings
@@ -348,16 +383,15 @@ final class RecordingController: ObservableObject {
         systemLevel = 0
         log = []
         capturedSilence = false
+        microphoneStarved = false
         systemAudioSilence = false
+        systemAudioStarved = false
         systemNotesShown = 0
+        microphoneNotesShown = 0
+        lastMicrophoneFrames = 0
+        lastSystemFrames = 0
         elapsed = 0
         level = 0
-
-        let session = UUID().uuidString
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minutes-mic-\(session).wav")
-        let systemURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minutes-system-\(session).wav")
 
         Task { @MainActor in
             if MicrophoneCapture.permissionState == .undetermined {
@@ -378,19 +412,35 @@ final class RecordingController: ObservableObject {
                 state.startFailed()
                 return
             }
+            // The recording goes where a crash cannot take it: its own folder
+            // under Application Support, with the title and the notes kept
+            // beside it as they are typed. The next launch offers back any
+            // recording that was never written up.
+            let begun: RecordingSession
             do {
-                try microphone.start(writingTo: url)
-                recordingURL = url
-                startedAt = Date()
+                begun = try RecordingSession.begin(in: sessionsRoot, startedAt: Date(), draft: draft)
+            } catch {
+                userError = "Recording did not start: there was nowhere to keep it. \(error.localizedDescription)"
+                append(userError!)
+                state.startFailed()
+                return
+            }
+            do {
+                try microphone.start(writingTo: begun.audioURL(for: .me))
+                session = begun
+                savedDraft = draft
+                startedAt = (try? begun.manifest().startedAt) ?? Date()
                 state.startSucceeded()
                 append("Recording started.")
                 startTicker()
             } catch {
+                try? begun.discard()
                 userError = "Recording did not start: \(error.localizedDescription)"
                 append(userError!)
                 state.startFailed()
                 return
             }
+            let systemURL = begun.audioURL(for: .others)
 
             // The other side is a separate track and a separate risk. If the
             // tap will not start, the meeting still gets recorded, and the log
@@ -423,37 +473,32 @@ final class RecordingController: ObservableObject {
             microphone: microphone,
             systemAudio: systemAudioRunning ? systemAudio : nil)
         systemAudioRunning = false
+        microphoneStarved = false
+        systemAudioStarved = false
+        level = 0
+        systemLevel = 0
         for line in stopped.failures { append(line) }
 
-        // Without the owner's own track there is no meeting to write up. The
-        // tap is already stopped by the line above, whatever happened here.
+        let session = self.session
+        self.session = nil
+        if let session { try? session.save(draft: draft) }
+
+        // Without the owner's own track there is no meeting to write up now.
+        // Whatever was recorded stays in its session and is offered back.
         guard stopped.ownCapture != nil else {
             userError =
                 "No microphone capture was recorded, so there is no meeting to write up. Your draft is kept."
             state.abandon()
+            refreshRecoverable()
             return
         }
 
-        let captures = stopped.captures
-        let missingTracks = stopped.missingTracks
-
-        // Every track is summarised by the pipeline, in the order it processes
-        // them, so nothing is reported twice or reported for one track only.
         let meetingTitle = draft.meetingTitle(or: defaultTitle())
         let started = startedAt ?? Date()
         let ownerNotes = draft.bullets
         let pipelineSettings = sessionSettings ?? settings
         let pipelineTranscriber = sessionTranscriber ?? transcriber
         let pipelineNotes = sessionNotes ?? notesClient()
-
-        state.working("Transcribing on this Mac.")
-
-        let pipeline = MeetingPipeline(
-            settings: pipelineSettings,
-            store: MeetingStore(settings: pipelineSettings),
-            transcriber: pipelineTranscriber,
-            notes: pipelineNotes
-        )
         // The pipeline now holds the session's settings, transcriber, and
         // client in its own captured locals, so the controller's snapshots
         // can go. They are cleared here and not earlier, because they are
@@ -462,14 +507,112 @@ final class RecordingController: ObservableObject {
         sessionTranscriber = nil
         sessionNotes = nil
 
+        // The title and the notes are on disk with the recording, and the
+        // write-up takes them from here, so they do not carry into the next
+        // meeting. The slot is free at once: the next meeting does not wait
+        // for this one's notes. A write-up that fails keeps both, with the
+        // recording, and offers them back.
+        draft.clearAfterWriteUp()
+        savedDraft = MeetingDraft()
+        refreshDraftTitle()
+        state.finish()
+
+        runWriteUp(
+            id: session?.id ?? UUID().uuidString,
+            title: meetingTitle,
+            startedAt: started,
+            ownerNotes: ownerNotes,
+            captures: stopped.captures,
+            missingTracks: stopped.missingTracks,
+            session: session,
+            settings: pipelineSettings,
+            transcriber: pipelineTranscriber,
+            notes: pipelineNotes)
+    }
+
+    // MARK: - Interrupted recordings
+
+    /// Looks for recordings an earlier run left behind. The one recording now
+    /// and the ones being written up are never offered.
+    func refreshRecoverable() {
+        let root = sessionsRoot
+        var live = Set(writingUp.map(\.id))
+        if let session { live.insert(session.id) }
         Task { @MainActor in
+            let found = await Task.detached {
+                RecordingSession.leftovers(in: root, excluding: live).compactMap(RecoverableRecording.read)
+            }.value
+            let stillLive = Set(writingUp.map(\.id))
+            recoverable = found.filter { !stillLive.contains($0.id) && $0.id != session?.id }
+        }
+    }
+
+    /// Writes an interrupted recording up, with the title and the notes that
+    /// were typed for it, under the time it started.
+    func recover(_ item: RecoverableRecording) {
+        recoverable.removeAll { $0.id == item.id }
+        let captures = item.session.captures()
+        guard !captures.isEmpty else {
+            try? item.session.discard()
+            append("Nothing was left of that recording to write up, so it was cleared away.")
+            return
+        }
+        runWriteUp(
+            id: item.id,
+            title: item.title(defaultFormatter: { self.defaultTitle(for: $0) }),
+            startedAt: item.manifest.startedAt,
+            ownerNotes: item.manifest.bullets,
+            captures: captures,
+            missingTracks: item.missingTracks,
+            session: item.session,
+            settings: settings,
+            transcriber: transcriber,
+            notes: notesClient())
+    }
+
+    /// Deletes an interrupted recording the owner chose to throw away.
+    func discard(_ item: RecoverableRecording) {
+        do {
+            try item.session.discard()
+            append("The interrupted recording was deleted.")
+        } catch {
+            userError = "The interrupted recording could not be deleted: \(error.localizedDescription)"
+        }
+        refreshRecoverable()
+    }
+
+    private func runWriteUp(
+        id: String,
+        title: String,
+        startedAt: Date,
+        ownerNotes: String,
+        captures: [CaptureResult],
+        missingTracks: [AudioTrack],
+        session: RecordingSession?,
+        settings pipelineSettings: AppSettings,
+        transcriber pipelineTranscriber: FluidAudioTranscriber,
+        notes pipelineNotes: OpenAICompatibleNotesClient
+    ) {
+        writingUp.removeAll { $0.id == id }
+        writingUp.append(RunningWriteUp(id: id, title: title))
+        completionNotice = nil
+
+        let pipeline = MeetingPipeline(
+            settings: pipelineSettings,
+            store: MeetingStore(settings: pipelineSettings),
+            transcriber: pipelineTranscriber,
+            notes: pipelineNotes
+        )
+
+        Task { @MainActor in
+            defer { writingUp.removeAll { $0.id == id } }
             do {
                 try FileManager.default.createDirectory(
                     at: pipelineSettings.notesFolderURL, withIntermediateDirectories: true)
 
                 let outcome = try await pipeline.run(
-                    title: meetingTitle,
-                    startedAt: started,
+                    title: title,
+                    startedAt: startedAt,
                     ownerNotes: ownerNotes,
                     captures: captures,
                     missingTracks: missingTracks
@@ -477,6 +620,8 @@ final class RecordingController: ObservableObject {
                     Task { @MainActor in self.append(message) }
                 }
                 lastMeetingURL = outcome.directory.url
+                // Written up, so the session has done its job.
+                try? session?.discard()
                 if outcome.notesArePending {
                     append(outcome.notesPendingReason ?? "The endpoint did not answer.")
                     completionNotice = "Transcript saved · Notes pending"
@@ -484,19 +629,10 @@ final class RecordingController: ObservableObject {
                     completionNotice = "Saved"
                 }
                 userError = nil
-                // The title and the bullets are in that meeting's folder now,
-                // so they do not carry into the next meeting. A write-up that
-                // failed keeps them, because then the folder does not have
-                // them and the app is the only place they exist.
-                draft.clearAfterWriteUp()
-                refreshDraftTitle()
-                state.finish()
             } catch {
-                userError = "The meeting could not be written up: \(error.localizedDescription)"
+                userError = "\u{201C}\(title)\u{201D} could not be written up: \(error.localizedDescription) The recording was kept."
                 append(userError!)
-                // The thrown failure means the folder may not hold the draft,
-                // so it is preserved here for the next attempt.
-                state.abandon()
+                refreshRecoverable()
             }
         }
     }
@@ -526,9 +662,13 @@ final class RecordingController: ObservableObject {
     }
 
     private func defaultTitle() -> String {
+        defaultTitle(for: startedAt ?? Date())
+    }
+
+    private func defaultTitle(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMMM HH:mm"
-        return "Meeting \(formatter.string(from: startedAt ?? Date()))"
+        return "Meeting \(formatter.string(from: date))"
     }
 
     private func startTicker() {
@@ -546,24 +686,44 @@ final class RecordingController: ObservableObject {
         guard let startedAt else { return }
         elapsed = Date().timeIntervalSince(startedAt)
         let signal = microphone.signal
-        level = signal.meterLevel
+        level = meter(signal, previous: level, lastFrames: &lastMicrophoneFrames)
+        microphoneStarved = microphone.isStarved
         // A tap or a device that has stopped feeding looks exactly like a
-        // quiet room, so the app measures instead of assuming.
+        // quiet room to a level check, so the app measures both instead of
+        // assuming.
         capturedSilence =
             signal.isAllZero || signal.hasStalled(sampleRate: AudioFormat.sampleRate, forSeconds: 10)
+            || microphoneStarved
+        say(microphone.notes, shown: &microphoneNotesShown)
 
         if systemAudioRunning {
             let systemSignal = systemAudio.signal
-            systemLevel = systemSignal.meterLevel
+            systemLevel = meter(systemSignal, previous: systemLevel, lastFrames: &lastSystemFrames)
             systemAudioSilence = systemSignal.isAllZero
+            systemAudioStarved = systemAudio.isStarved
             // Anything the tap had to do, such as rebuilding itself, is said
             // once and in the same activity log as everything else.
-            let notes = systemAudio.notes
-            if notes.count > systemNotesShown {
-                for note in notes[systemNotesShown...] { append(note) }
-                systemNotesShown = notes.count
-            }
+            say(systemAudio.notes, shown: &systemNotesShown)
         }
+
+        // The words typed so far go to disk with the recording.
+        if let session, draft != savedDraft {
+            if (try? session.save(draft: draft)) != nil { savedDraft = draft }
+        }
+    }
+
+    /// The meter follows what arrived since the last look, and falls when
+    /// nothing did, so a microphone that stopped never shows as live.
+    private func meter(_ signal: SignalCheck, previous: Float, lastFrames: inout Int) -> Float {
+        defer { lastFrames = signal.frameCount }
+        guard signal.frameCount > lastFrames else { return previous * 0.5 }
+        return signal.meterLevel
+    }
+
+    private func say(_ notes: [String], shown: inout Int) {
+        guard notes.count > shown else { return }
+        for note in notes[shown...] { append(note) }
+        shown = notes.count
     }
 
     private func append(_ message: String) {

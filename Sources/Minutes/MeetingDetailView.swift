@@ -195,6 +195,14 @@ private struct NotesPane: View {
                     AnchorChip(label: anchor.label, hot: model.hotLine == line) {
                         model.jump(to: line)
                     }
+                } else {
+                    // Written by the model and not in the transcript. Shown,
+                    // struck through, and pointing nowhere.
+                    Text(anchor.label)
+                        .font(.mono(Size.label))
+                        .strikethrough()
+                        .foregroundStyle(Ink.faint)
+                        .help("This timestamp is not in the transcript.")
                 }
             }
         }

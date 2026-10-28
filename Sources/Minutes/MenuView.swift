@@ -15,6 +15,10 @@ struct MenuView: View {
                         firstRunNotice
                     }
 
+                    ForEach(controller.recoverable) { item in
+                        recoveryNotice(item)
+                    }
+
                     recordingRow
 
                     if controller.isRecording, controller.systemAudioNotice != nil {
@@ -128,6 +132,33 @@ struct MenuView: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Ink.panel)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.line)))
+    }
+
+    // MARK: - Interrupted recordings
+
+    private func recoveryNotice(_ item: RecoverableRecording) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("A recording from \(item.manifest.startedAt.formatted(date: .abbreviated, time: .shortened)) was not written up. \(Timecode.string(from: item.duration)) of audio and your notes were kept.")
+                .font(.ui(Size.small))
+                .foregroundStyle(Ink.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                Button { controller.recover(item) } label: {
+                    Text("Write it up").font(.ui(Size.small, weight: .semibold)).foregroundStyle(Ink.accentDeep)
+                }
+                .buttonStyle(.plain)
+                Button { controller.discard(item) } label: {
+                    Text("Delete").font(.ui(Size.small, weight: .medium)).foregroundStyle(Ink.muted)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Ink.panel)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Ink.warn.opacity(0.5))))
     }
 
     // MARK: - Recording
